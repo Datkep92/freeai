@@ -1,0 +1,19 @@
+{
+  "name": "free-model-hub",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Scan free/zero-cost models, store API keys per URL, verify and route.",
+  "scripts": {
+    "start": "node scripts/serve.js",
+    "serve": "node scripts/serve.js",
+    "test": "node --no-experimental-fetch tests/run-all.js",
+    "bench": "node --no-experimental-fetch tests/bench.js",
+    "probe": "node probe-urls.mjs",
+    "uicheck": "node uicheck.mjs",
+    "classify": "node probe-classify.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

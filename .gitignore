@@ -1,0 +1,17 @@
+# Không có dependency, nhưng node vẫn hay để lại cache của ES module.
+node_modules/
+.npm/
+
+# Dữ liệu người dùng không được lên repo.
+*.local.json
+.env
+.env.*
+
+# Log và file rác.
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Kết quả probe tạm khi chạy thử provider.
+probe-*.json

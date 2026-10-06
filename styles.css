@@ -1,0 +1,1446 @@
+/**
+ * Free Model Hub - mobile UI.
+ *
+ * Built for a thumb on a phone, not scaled down from a desktop layout. The
+ * decisions that matter, and why:
+ *
+ *   - 44px is the floor for anything tappable. A 30px lock button is unusable
+ *     on a moving bus and nobody has ever designed one on purpose.
+ *   - Colour is never the only signal. Every status also carries a word, so the
+ *     list still reads with colour blindness, in sunlight, or on a dim screen.
+ *   - Long press opens a sheet instead of a row of icons. That is what keeps a
+ *     five-action row from eating the text it is describing.
+ *   - Safe areas are respected at the top (notch) and the bottom (home
+ *     indicator), so nothing ends up under the hardware.
+ */
+
+:root {
+  /* Surfaces. Four steps, each one clearly lighter than the last, because the
+     whole app is built from stacked panels and the separation between them is
+     what makes it read as designed rather than as one flat sheet of text. */
+  --bg: #08090c;
+  --surface: #101218;
+  --surface-2: #171a22;
+  --surface-3: #1f232d;
+  --surface-4: #282d39;
+  --line: #23262f;
+  --line-strong: #333846;
+
+  /* Text. Three levels: the value, the label, the hint. */
+  --text: #f0f2f5;
+  --text-2: #a2a9b6;
+  --text-3: #6e7684;
+  --fg: var(--text);
+
+  /* Status. Every one of these is also written as a word somewhere in the UI, so
+     colour never has to carry the meaning on its own - which matters most for
+     the free-level dots, where the whole point is a quick read at a glance. */
+  --ok: #3ddc97;
+  --ok-dim: #0d2a1e;
+  --warn: #f5c344;
+  --warn-dim: #2e2409;
+  --bad: #ff6b6b;
+  --bad-dim: #33161a;
+  --info: #7cc4ff;
+  --info-dim: #10233a;
+  --paid: #c3a6ff;
+  --paid-dim: #241a3d;
+  --unknown: #7a8494;
+  --unknown-dim: #1b1f27;
+  --free: var(--ok);
+  --likely: var(--warn);
+
+  /* The one accent. Deliberately not the saturated blue of a stock button: a
+     flat #3b82f6 fill reads as a link and cheapens the whole screen. The accent
+     is used for small marks - a selected edge, a text colour, an icon - and the
+     primary button is a near-white surface instead, which is what a premium app
+     does with its main action. */
+  --accent: #6ea8fe;
+  --accent-dim: #16233a;
+  --accent-line: #2c4468;
+
+  /* Radii. Cards sit at 16, controls at 11, pills are fully round. */
+  --r-sm: 8px;
+  --r-md: 11px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+
+  /* The floor for a tap. */
+  --tap: 44px;
+
+  /* Motion. One easing and two durations, so every transition in the app has
+     the same feel: fast enough to feel instant, slow enough to be readable. */
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --fast: 140ms;
+  --slow: 260ms;
+
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* No pinch zoom on a list: it can only ever hide rows. */
+  touch-action: pan-x pan-y;
+  overscroll-behavior-y: none;
+  overflow-x: hidden;
+}
+
+/* Nothing selects on a list row, so a long press becomes a drag instead of a
+   text selection the user then has to dismiss. */
+button, input, select { font: inherit; color: inherit; }
+button { -webkit-user-select: none; user-select: none; }
+
+/* ============================================================ top app bar */
+
+.appbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(var(--safe-t) + 8px) 12px 8px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  border-bottom: 1px solid var(--line);
+}
+
+.appbar-title { flex: 1; min-width: 0; }
+.appbar-title h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.appbar-sub {
+  display: block;
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap);
+  height: var(--tap);
+  flex: none;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  color: var(--text-2);
+}
+.iconbtn:active { background: var(--surface-2); color: var(--text); }
+
+/* The drawer handle is the one icon on this bar that opens something rather
+   than doing something, so it is drawn on a surface instead of floating on the
+   blur: an edge control you have to be able to find without reading it. */
+.appbar-menu {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text-2);
+}
+.appbar-menu[aria-expanded="true"] {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.appbar-menu:active { transform: scale(.96); }
+
+/* Every icon is a stroked path, so one rule sizes the whole app. */
+svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.appbar-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 46px;
+  height: 46px;
+  padding: 0 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.appbar-btn svg { width: 18px; height: 18px; }
+.appbar-btn:active { background: var(--surface-3); color: var(--text); transform: scale(.96); }
+
+/* ============================================================== drawer */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, .6);
+  backdrop-filter: blur(2px);
+  animation: fade var(--fast) var(--ease);
+}
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 60;
+  width: 86vw;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  padding: 0 12px calc(var(--safe-b) + 12px);
+  transform: translateX(-100%);
+  /* Fast enough to feel like a drawer snapping, slow enough that the movement
+     is readable. The same curve as everything else, so the app feels like one
+     object rather than a set of screens. */
+  transition: transform var(--slow) var(--ease);
+  overscroll-behavior: contain;
+}
+body.nav-open .sidebar { transform: translateX(0); }
+
+body.nav-open { overflow: hidden; }
+
+/* The grab handle says "this is a drawer", which the transform alone does not. */
+.side-grab {
+  width: 36px;
+  height: 4px;
+  margin: calc(var(--safe-t) + 8px) auto 0;
+  border-radius: 2px;
+  background: var(--line-strong);
+  flex: none;
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 2px 8px;
+  flex: none;
+}
+.side-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--text-3);
+}
+
+/* The add button is a real control with an icon, not a "+ URL" text chip: the
+   plus alone is ambiguous, and the pair reads as an action at a glance. */
+.side-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.side-add svg { width: 13px; height: 13px; }
+
+/* One control row above the list: what can be done to every URL, and how the
+   list is grouped. Both answer a question about the whole list rather than one
+   row, so they sit together - and together they take a single line, which is
+   what keeps them visible on a phone without scrolling. */
+.side-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 10px;
+  flex: none;
+}
+.side-lockall {
+  display: flex;
+  min-width: 0;
+}
+
+/* The classification control.
+   A native <select> is used rather than a row of toggles because there are four
+   answers and only one can be right, and a dropdown says "exactly one" without
+   having to be told. The chevron is drawn so it matches every other icon in the
+   app - the platform one renders at a different weight and in a different
+   colour, and the two together look like two different controls. */
+.side-sort {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 22px 0 9px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.sort-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  flex: none;
+}
+.sort-select {
+  /* The control is the label, so the select itself is the invisible hit area on
+     top of it: one tap target, one look. */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: inherit;
+  color: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.sort-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sort-caret {
+  position: absolute;
+  right: 7px;
+  width: 13px;
+  height: 13px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+/* What the dots on each row mean. Kept because the drawer shows three levels of
+   certainty per URL and a coloured dot alone is not a label. */
+.side-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 9px;
+  margin: 0 0 8px;
+  padding: 0 2px;
+  color: var(--text-3);
+  font-size: 10px;
+}
+.lg {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.lg-free { background: var(--ok); }
+.lg-likely { background: var(--warn); }
+.lg-unknown { background: var(--unknown); }
+.lg-paid { background: var(--paid); }
+
+.side-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-bottom: 8px;
+}
+
+.side-foot {
+  flex: none;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* The gesture legend. It is the only place the two row gestures are named, so
+   it is written as two facts rather than a sentence, and kept as quiet as
+   possible: it is a reminder, not content. */
+.side-hint {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--text-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+  letter-spacing: .01em;
+}
+
+/* ---- URL entry: one URL, one row, never merged ---- */
+
+.urlitem {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  margin-bottom: 6px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  transition: background .15s, border-color .15s;
+}
+.urlitem.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
+}
+.urlitem.locked { opacity: .5; }
+
+.urlopen {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: stretch;
+  padding: 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  text-align: left;
+}
+
+.urlitem .uname {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.urlitem .ubase {
+  font-size: 10px;
+  color: var(--text-3);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+}
+.urlitem .umeta {
+  font-size: 11px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The open URL is marked by an edge, not by a dot inside the row: the row's
+   first line is the name, and a dot sitting on it competes with the text for a
+   70px line that already has to hold a long provider name. */
+.urlitem.on { box-shadow: inset 3px 0 0 var(--accent); }
+
+.urlbadge {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .01em;
+  border: 1px solid transparent;
+}
+.urlbadge.free   { color: var(--ok);    background: var(--ok-dim);    border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.urlbadge.needkey { color: var(--info); background: var(--info-dim); border-color: color-mix(in srgb, var(--info) 35%, transparent); }
+.urlbadge.unknown { color: var(--text-3); background: var(--unknown-dim); border-color: var(--line); }
+
+/* ---- group headings ---- */
+
+.urlgroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 2px 6px;
+  border-top: 1px solid var(--line);
+}
+.urlgroup:first-child { border-top: none; padding-top: 4px; }
+.urlgroup-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--text-3);
+}
+.urlgroup-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.urlgroup-count {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================== content */
+
+.content {
+  padding: 12px 12px calc(var(--safe-b) + 84px);
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.scan-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.scan-row .primary { flex: 1; }
+.scan-row svg { width: 18px; height: 18px; }
+
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--tap);
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: var(--r-md);
+  font-size: 14px;
+  font-weight: 550;
+  letter-spacing: -.005em;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease),
+    transform var(--fast) var(--ease), opacity var(--fast) var(--ease);
+}
+/* A press reads as the surface being pressed in, not as the button shrinking.
+   Scaling a control by 3% makes a 44px target visibly jump under the finger,
+   which is the single most common way a tap feels cheap. */
+button:active { transform: scale(.975); background: var(--surface-3); }
+button:disabled { opacity: .4; pointer-events: none; }
+
+/* The primary action is the lightest thing on the screen.
+   A saturated blue fill is the default look of a web form, and it is exactly
+   what makes an app feel unfinished: the eye is drawn to a flat block of colour
+   instead of to the content. A near-white surface reads as a physical control,
+   carries the same contrast for any label colour, and lets the one accent hue
+   stay reserved for marks and edges. */
+button.primary {
+  background: var(--text);
+  border-color: var(--text);
+  color: #0a0c10;
+  font-weight: 650;
+}
+button.primary:active { background: #d7dbe2; }
+
+button.danger {
+  background: var(--bad-dim);
+  border-color: color-mix(in srgb, var(--bad) 28%, transparent);
+  color: var(--bad);
+}
+button.danger:active { background: color-mix(in srgb, var(--bad) 22%, var(--bad-dim)); }
+
+button.block { width: 100%; }
+button.small { min-height: 38px; padding: 8px 12px; font-size: 13px; }
+button.mini {
+  min-height: 32px;
+  padding: 6px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--text-2);
+  border-radius: 999px;
+}
+button.mini:active { background: var(--surface-2); }
+
+/* Lock/unlock everything. This is the one control that reverses meaning based
+   on state, so the label is the only thing that tells the two apart - the pill
+   keeps the quiet outline of every other mini control and the wording does the
+   work. */
+button.mini.lockall {
+  white-space: nowrap;
+  color: var(--text-2);
+}
+button.mini.lockall:active { background: var(--surface-3); color: var(--text); }
+
+/* ---- filters ----
+   One segmented control rather than four pills. The four levels are a single
+   choice among neighbours, so they are laid out as one object: sharing a
+   background, sharing a border, one selected cell. Four separate pills read as
+   four unrelated buttons, and the selected one fills with colour and shouts
+   louder than the data it filters. */
+
+.filter-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 34px;
+  min-width: 0;
+  padding: 6px 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.chip:active { transform: none; }
+.chip.on {
+  background: var(--surface-4);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+/* The certainty dot. Same three colours as the rows it filters, so the chip and
+   the rows below it are read as the same scale. */
+.cdot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--unknown);
+}
+.cdot.ok { background: var(--ok); }
+.cdot.warn { background: var(--warn); }
+
+/* The label never truncates; the count is what gives way when the row is narrow.
+   A chip reading "Chắc…" tells the user nothing, whereas a chip reading "0đ · 3"
+   still does, so the number is the first thing to be dropped. */
+.chip-label { flex: none; }
+.chip-count {
+  flex: none;
+  min-width: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+.chip.on .chip-count {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+/* An empty chip keeps its place - a level that currently holds nothing is still
+   one of the four answers - but its count takes no room, because a bare pill
+   around nothing is just a gap in the row. */
+.chip-count:empty { display: none; }
+
+/* ---- search ---- */
+
+.tree { margin-bottom: 16px; }
+
+.search-wrap { position: relative; margin-bottom: 10px; }
+.search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 17px; height: 17px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+input[type="search"], input[type="text"], input[type="url"], input[type="password"], select {
+  width: 100%;
+  min-height: var(--tap);
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  /* 16px keeps iOS Safari from zooming when a field takes focus. */
+  font-size: 16px;
+}
+.search-wrap .search { padding-left: 38px; }
+input::placeholder { color: var(--text-3); }
+input:focus, select:focus, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+label {
+  display: block;
+  margin: 12px 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-3);
+}
+
+/* ======================================================== the model list */
+
+.group {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.group + .group { margin-top: 10px; }
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  font-size: 13px;
+  font-weight: 650;
+}
+.group-head .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-head .meta { color: var(--text-3); font-size: 11px; font-weight: 500; flex: none; }
+
+/* A row is two lines of content inside a 44px+ target. The name owns the top
+   line; the facts own the second, so a model with many published facts does not
+   push its own id off the row. */
+.model {
+  display: flex;  align-items: center;
+  gap: 2px;
+  padding: 4px 4px 4px 0;
+  border-top: 1px solid var(--line);
+}
+.model:first-child { border-top: none; }
+
+.modelopen {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px 10px 12px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  text-align: left;
+}
+
+/* The free-level dot, colour-coded and always beside a word elsewhere in the
+   row, so colour is never the only thing carrying the meaning. */
+.model .free {
+  width: 9px; height: 9px;
+  flex: none;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--unknown);
+}
+.model[data-level="FREE_VERIFIED"] .free { background: var(--ok); }
+.model[data-level="FREE_LIKELY"] .free    { background: var(--warn); }
+.model[data-level="FREE_UNKNOWN"] .free   { background: var(--unknown); }
+.model[data-level="PAID"] .free           { background: var(--paid); }
+
+.model .mid { flex: 1; min-width: 0; }
+.model .name {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* Published facts. Each chip exists only because the provider stated it, so a
+   model nobody described simply shows nothing rather than a row of dashes. */
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 5px;
+  margin-top: 4px;
+}
+.facts:empty { display: none; }
+.chip-fact {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.55;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip-fact.fname { color: var(--text-2); background: transparent; border-color: transparent; padding-left: 0; font-weight: 500; }
+.chip-fact.cap { color: var(--info); background: var(--info-dim); border-color: transparent; }
+.chip-fact.age { color: var(--text-3); background: transparent; border-color: transparent; }
+/* The "nothing published" marker. Dashed, because it is an absence rather
+   than a fact, and italic so it never reads as one of the real chips. */
+.chip-fact.none {
+  color: var(--text-3);
+  background: transparent;
+  border-color: var(--line);
+  border-style: dashed;
+  font-style: italic;
+  font-weight: 500;
+}
+
+/* Speed, or the honest absence of it. "not measured" and "measured at zero"
+   are different facts and the row says which one it is. */
+.model .speed {
+  flex: none;
+  align-self: center;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.model .speed.measured { color: var(--ok); background: var(--ok-dim); }
+
+.model .chev { flex: none; align-self: center; width: 16px; height: 16px; color: var(--text-3); }
+
+/* ---- lock state ----
+   The glyph carries it, and it is told apart from its neighbours by fill and
+   border rather than by a word. Four states on a 44px row:
+
+     open        unlocked padlock, no fill       in the rotation
+     locked      closed padlock, amber fill     I turned this off
+     inherited   closed padlock, dashed border  the level above did
+     [soon]      held in the press               feedback while pressing
+
+   A dimmed row would have carried this too, but a dimmed row on a dim screen is
+   not a readable state, so the row is dimmed only as reinforcement. */
+
+.lockbtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  color: var(--text-3);
+  transition: color var(--fast) var(--ease), background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+.lockbtn svg { width: 18px; height: 18px; }
+.lockbtn:active { background: var(--surface-3); }
+
+/* Locked by me: a filled amber square. It is the only warm thing on the row,
+   which is what makes it findable in a long list without reading anything. */
+.lockbtn.locked {
+  color: var(--warn);
+  background: var(--warn-dim);
+  border-color: color-mix(in srgb, var(--warn) 26%, transparent);
+}
+
+/* Locked by the URL above: dashed, because the user did not choose this and
+   cannot undo it from this row alone - tapping it opens the whole branch. */
+.lockbtn.inherited {
+  color: var(--warn);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  border-style: dashed;
+}
+
+/* ================================================== priority / rotation */
+
+.prio {
+  margin-bottom: 10px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+.prio-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.prio-title { font-size: 12px; color: var(--text-2); font-weight: 600; }
+.prio-select { flex: 1; min-width: 150px; min-height: 38px; font-size: 13px; padding: 8px 10px; }
+/* Explains what the current rule actually produces, so an order that looks
+   wrong is answerable without guessing which setting is active. */
+.prio-sum {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-3);
+  word-break: break-word;
+}
+.prio-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+
+.empty {
+  padding: 16px 12px;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ================================================== tabs + panes */
+
+/* A row of buttons. Used under a URL's model list and under the key list, so
+   the two never end up with different spacing. */
+.actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.actions button { flex: 1 1 auto; min-width: 120px; }
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.tab {
+  flex: 1;
+  min-height: 34px;
+  padding: 6px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 650;
+}
+.tab.on { background: var(--surface-3); border-color: var(--line); color: var(--text); }
+
+/* =============================================== bottom navigation bar */
+
+.tabbar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 40;
+  display: flex;
+  padding: 6px 6px calc(var(--safe-b) + 6px);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  border-top: 1px solid var(--line);
+}
+.tabbar-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 50px;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-md);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .01em;
+}
+.tabbar-btn svg { width: 20px; height: 20px; }
+.tabbar-btn.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tabbar-btn:active { transform: scale(.94); }
+
+/* ============================================================== sheets
+ *
+ * A sheet is a <dialog> that docks to the bottom of the screen.
+ *
+ * Three things have to hold at once, and each was wrong at some point:
+ *
+ *   1. Hidden when closed. A <dialog> is display:none until it opens, but that
+ *      comes from the browser's own stylesheet - so setting `display` on the
+ *      dialog from author CSS overrides it and puts the sheet on screen before
+ *      anything opened it. The layout therefore lives on [open], and a closed
+ *      sheet is hidden explicitly so a future rule cannot undo that.
+ *   2. A definite height. `max-height` alone does not give the flex children a
+ *      box to divide, so a long model sheet grew past its own edge and pushed the
+ *      footer buttons off the bottom of the screen - which reads as "the dialog
+ *      is broken" long before anyone scrolls.
+ *   3. No height on the body. The body is the only part that scrolls; if it can
+ *      take its natural height, the sheet grows instead of scrolling and the
+ *      buttons go with it.
+ */
+
+.sheet,
+dialog {
+  padding: 0;
+  border: none;
+  background: var(--surface);
+  color: var(--text);
+  max-width: 100vw;
+  /* vh first, dvh second. `dvh` tracks the visible area, which is what a
+     browser with a collapsing address bar wants - but a browser that does not
+     know the unit drops the declaration instead of falling back to something
+     sensible, so the plain vh is stated first and has to stay. */
+  max-height: 100vh;
+  max-height: 100dvh;
+  /* A phone without a viewport-fit still has to be able to scroll this. */
+  overscroll-behavior: contain;
+}
+
+/* Hidden unless open. Declared before the open rule so the cascade reads in
+   the order it behaves, and repeated on the open state so a browser that
+   ignores [open] specificity still ends up hidden. */
+dialog:not([open]) { display: none; }
+
+.sheet {
+  position: fixed;
+  /* Docked to the bottom edge: top free, bottom pinned, and both sides free so
+     the box can be centred by its own margin.
+
+     The two ways to centre a fixed box do different things here. `margin: auto`
+     centres horizontally *and* - with a free top - pulls the box towards the
+     vertical middle, which is how a <dialog> centres itself, and it is exactly
+     wrong for a bottom sheet. So only the horizontal auto margin is used and the
+     top is pinned by the inset; the bottom is what anchors the sheet. */
+  inset: auto 0 0 0;
+  margin: 0 auto;
+  width: 100vw;
+  max-width: 560px;
+  max-height: 88vh;
+  max-height: 88dvh;
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  border-top: 1px solid var(--line-strong);
+  box-shadow: 0 -18px 50px rgba(0, 0, 0, .55);
+}
+
+.sheet[open] {
+  display: flex;
+  flex-direction: column;
+  animation: sheetUp .26s cubic-bezier(.32, .72, 0, 1);
+}
+
+.sheet::backdrop {
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.sheet-form {
+  max-height: 80vh;
+  max-height: 80dvh;
+}
+
+/* Horizontal centring is the margin's job, so the slide only moves vertically
+   and a transform here cannot knock the sheet sideways. */
+@keyframes sheetUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet[open] { animation: none; }
+  .sidebar { transition: none; }
+  * { transition: none !important; }
+}
+
+/* ---- inside a sheet ----
+   The three parts are fixed, fixed and flexible. Header and footer never
+   scroll, so the title and the buttons are always in the same place whatever
+   the body is doing. */
+
+.sheet-grab {
+  width: 36px;
+  height: 4px;
+  margin: calc(var(--safe-t) + 8px) auto 0;
+  border-radius: 2px;
+  background: var(--line-strong);
+  flex: none;
+}
+
+.sheet-head {
+  position: relative;
+  flex: none;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.dlg-title {
+  margin: 0;
+  padding-right: 40px;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  word-break: break-word;
+}
+.hint {
+  margin: 4px 0 0;
+  color: var(--text-3);
+  font-size: 11px;
+  word-break: break-word;
+}
+.sheet-x {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: var(--tap);
+  height: var(--tap);
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-3);
+}
+.sheet-x svg { width: 18px; height: 18px; }
+
+/* The one part that scrolls. `min-height: 0` is what lets a flex child be
+   smaller than its content - without it the body refuses to shrink, the sheet
+   grows past max-height, and the footer leaves the screen. */
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 4px 16px 8px;
+}
+.sheet-foot {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px calc(var(--safe-b) + 12px);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.sheet-foot > button { flex: 1; }
+
+/* A sheet that has no scrolling body at all - the action list - still needs the
+   footer pinned, so the list is the flexible part here instead. */
+.sheet-actions {
+  padding-bottom: calc(var(--safe-b) + 8px);
+}
+
+.field { margin: 14px 0; }
+.field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--text-3);
+}
+
+/* URL and MODEL are the two things copied out of this sheet, so they are
+   buttons: a tap copies, and the label says so. */
+.copybox {
+  display: block;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 11px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-2);
+  word-break: break-all;
+  user-select: all;
+  -webkit-user-select: all;
+}
+.copybox-tap::after {
+  content: "chép";
+  float: right;
+  margin-left: 8px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-family: inherit;
+}
+
+.warnbox {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: var(--warn-dim);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  border-radius: var(--r-md);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ================================================== model information */
+
+.modelinfo { display: flex; flex-direction: column; }
+.inforow {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.inforow:last-of-type { border-bottom: none; }
+.infokey {
+  flex: none;
+  width: 88px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-3);
+}
+.infoval { flex: 1; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.infodesc {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* ================================================== API key rows */
+
+.keylockall { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.keyrows { display: flex; flex-direction: column; gap: 6px; }
+
+.keyrow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 4px 6px 0;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.keyrow .kflex { flex: 1; min-width: 0; padding: 0 4px 0 12px; }
+.keyrow .kmasked {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.keyrow .kfull {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  color: var(--ok);
+}
+.keyrow .kstat {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A key's status gets a word, not only a colour. */
+.kdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--unknown); }
+.kdot.HEALTHY { background: var(--ok); }
+.kdot.RATE_LIMITED, .kdot.QUOTA_EXHAUSTED, .kdot.MODEL_DENIED, .kdot.TEMP_ERROR { background: var(--warn); }
+.kdot.AUTH_INVALID, .kdot.EXPIRED, .kdot.PROVIDER_DOWN { background: var(--bad); }
+.kdot.MODEL_UNAVAILABLE { background: var(--info); }
+
+/* The word that goes with the dot. It carries the same meaning as the dot, so
+   it is set at the same weight and never bolder - if the word shouted, the dot
+   would stop being needed and the row would gain two visual anchors instead of
+   one. Tabular figures keep a row of them from shifting as text changes. */
+.kword {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.keyrow .iconbtn { width: 38px; height: 38px; min-height: 0; border-radius: var(--r-sm); }
+.keyrow .iconbtn svg { width: 17px; height: 17px; }
+.keyrow .iconbtn.del:active { color: var(--bad); background: var(--bad-dim); }
+
+/* ================================================ row action sheet */
+
+/* The action list is the flexible part of the action sheet: it is the one that
+   scrolls, so the cancel button below it stays put however many actions a row
+   offers. `min-height: 0` is what lets it shrink inside the flex column. */
+.action-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 12px 16px;
+}
+.action-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+}.action-item svg { width: 19px; height: 19px; color: var(--text-3); flex: none; }
+.action-item:active { background: var(--surface-3); }
+.action-item.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.action-item.warn svg { color: var(--warn); }
+.action-item.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+.action-item.danger svg { color: var(--bad); }
+.action-item .grow { flex: 1; min-width: 0; }
+.action-item .sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+/* ================================================ drag to reorder */
+
+/* The gesture is a press-and-hold then a drag, so nothing here needs to look
+   draggable until the row is already lifted. */
+.dragging {
+  opacity: .95;
+  background: var(--surface-3);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .5);
+  border-radius: var(--r-md);
+  /* The row follows the finger on the vertical axis; the browser must not also
+     scroll while it is held. */
+  touch-action: none;
+  z-index: 5;
+  position: relative;
+}
+.reordering { user-select: none; -webkit-user-select: none; }
+
+/* The mouse path still names where the row would land, with a line on the edge
+   it would sit against. Touch does not need it: the lifted row is already
+   moving between slots, so an insertion line would only flicker. */
+.dropbefore { box-shadow: inset 0 2px 0 var(--accent); }
+.dropafter { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* ================================================ health + log */
+
+/* A pane is just a block. It is hidden with the `hidden` attribute, and the
+   rule makes sure nothing here can re-show it. */
+.tabpane[hidden] { display: none; }
+
+.rowline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.rowline .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rowline .lat { flex: none; color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.log {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.log div { padding: 2px 0; word-break: break-word; }
+
+/* ================================================ toast */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--safe-b) + 76px);
+  z-index: 100;
+  transform: translate(-50%, 14px);
+  max-width: calc(100vw - 32px);
+  padding: 11px 18px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s, transform .2s;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+}
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+/* ================================================ wider screens
+   A phone is the target, but on a tablet or a desktop window the same markup
+   should stop stretching to full width rather than becoming unreadable. */
+@media (min-width: 700px) {
+  .sidebar { box-shadow: 20px 0 50px rgba(0, 0, 0, .5); }
+  /* On a wide screen the sheet floats rather than spanning the full width. The
+     inset is restated in full rather than nudged: `inset` is a shorthand, so
+     setting only `bottom` here would leave the horizontal centring from the
+     narrow-screen rule in place but overwrite its top - which is how the sheet
+     ends up stretching from the top of the screen instead of floating. */
+  .sheet {
+    inset: auto 0 6vh 0;
+    margin: 0 auto;
+    max-height: 82vh;
+    max-height: 82dvh;
+    border-radius: var(--r-xl);
+    border: 1px solid var(--line-strong);
+  }
+}
+
+/* Landscape on a phone: the bottom bar and the safe areas eat the little
+   vertical room there is, so both shrink to keep content visible. */
+@media (max-height: 480px) and (orientation: landscape) {
+  /* Landscape on a phone leaves very little vertical room, and the safe areas
+     and the bottom bar are competing for it. Everything gives a little back so
+     the sheet still has a usable body. */
+  .tabbar-btn { min-height: 42px; }
+  .appbar-btn { height: 40px; min-height: 40px; }
+  .sheet {
+    max-height: 94vh;
+    max-height: 94dvh;
+  }
+  .sheet-grab { margin-top: 6px; }
+  .sheet-head { padding-top: 8px; padding-bottom: 8px; }
+  .sheet-foot { padding-top: 8px; }
+}

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover so the layout can respect the notch and the home
+     indicator; the scale is pinned at 1 because this is a list UI, not a
+     document, and pinch-zoom on a list only ever hides rows. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0e13" />
+<meta name="color-scheme" content="dark" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Free Model Hub</title>
+<link rel="stylesheet" href="./styles.css?v=7" />
+</head>
+<body>
+
+<!-- ============================ top app bar ============================
+     One bar, one job: say which URL is open, and put the four actions that
+     act on that URL within thumb reach of the right hand. -->
+<header class="appbar">
+  <button id="btnMenu" class="iconbtn appbar-menu" aria-label="Mở danh sách URL" aria-expanded="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+
+  <div class="appbar-title">
+    <h1 id="treeTitle">Chọn URL</h1>
+    <!-- The count sits under the title rather than in the filter bar: it is a
+         fact about the list below, and it moves with the title. -->
+    <span id="filterCount" class="appbar-sub">Quét model 0đ · lưu API theo từng URL</span>
+  </div>
+
+  <button id="btnAddKeyUrl" class="appbar-btn" aria-label="Thêm API key cho URL này">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.8 7.8 5.5 5.5 0 0 1 7.8-7.8zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3"/></svg>
+    <span>API</span>
+  </button>
+  <button id="btnAddModel" class="appbar-btn" aria-label="Thêm model thủ công">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    <span>Model</span>
+  </button>
+</header>
+
+<!-- ============================ URL drawer ============================
+     Every URL is its own entry, never merged into one block. A URL is a thing
+     the user owns and configures, so it has to stay addressable. -->
+<div id="scrim" class="scrim" hidden></div>
+<aside id="sidebar" class="sidebar" aria-label="Danh sách URL">
+  <div class="side-grab" aria-hidden="true"></div>
+
+  <div class="side-head">
+    <span class="side-title">URL</span>
+
+    <button id="btnAddUrl" class="mini side-add">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>URL</span>
+    </button>
+  </div>
+
+  <!-- What the dots on the rows below mean, stated once, and in the same words
+       as the filter chips so the two are read as one scale. "Có phí" is here
+       and not in the filter because a URL can be a paid one - the main list
+       never is. -->
+  <p class="side-legend">
+    <i class="lg lg-free"></i>Chắc 0đ
+    <i class="lg lg-likely"></i>Có thể 0đ
+    <i class="lg lg-unknown"></i>Chưa rõ
+    <i class="lg lg-paid"></i>Có phí
+  </p>
+
+  <!-- One control row: what can be done to the whole list, and how it is
+       grouped. Both live together because they are the same kind of decision -
+       something about every URL rather than one URL - and separating them put
+       the classification control below the fold on a phone. -->
+  <div class="side-tools">
+    <div id="lockAllUrls" class="side-lockall"></div>
+    <label class="side-sort">
+      <span class="sort-label">Xếp</span>
+      <select id="urlSort" class="sort-select" aria-label="Cách xếp danh sách URL">
+        <option value="manual">Tôi đã kéo</option>
+        <option value="name">Tên A→Z</option>
+        <option value="models">Nhiều model 0đ</option>
+        <option value="keys">Nhiều API</option>
+      </select>
+      <svg class="sort-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    </label>
+  </div>
+
+  <div id="sidebarRoot" class="side-list"></div>
+
+  <!-- The drawer used to carry a second "+ THÊM URL" at the foot, directly under
+       a "+ URL" at the head. Two identical buttons for one action is one too
+       many, and the foot one sat on top of the list on a short screen. The head
+       button stays because it is reachable however far the list is scrolled. -->
+  <div class="side-foot">
+    <p class="side-hint">Nhấn giữ một dòng để kéo · bấm biểu tượng khoá để loại khỏi vòng quay</p>
+  </div>
+</aside>
+
+<main class="content">
+  <!-- One primary action, full width: scanning every URL is the thing a new
+       user does first, so it must not compete with the secondary controls. -->
+  <section class="scan-row">
+    <button id="btnScanAll" class="primary block">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg>
+      <span>QUÉT TẤT CẢ URL</span>
+    </button>
+    <button id="btnCancel" class="small danger" hidden>Huỷ</button>
+  </section>
+
+  <!-- One choice among neighbours, so it is drawn as one object: a segmented
+       control with a single selected cell rather than four loose pills.
+
+       The three narrow chips are not three kinds of model. They are three
+       answers to the same question - "how sure are we this costs nothing" - so
+       the words say the degree, not the category. That is why they read
+       "chắc / có thể / chưa rõ" and why "tất cả" is the only chip that speaks
+       about the whole set.
+
+       Nothing here can bring a paid model back: this list exists to answer
+       "what can I use for nothing", and a paid row inside it is a trap. -->
+  <nav class="filter-row" aria-label="Lọc model 0đ theo mức độ chắc chắn">
+    <button class="chip on" data-filter="all"><span class="chip-label">Tất cả</span></button>
+    <button class="chip" data-filter="verified">
+      <i class="cdot ok"></i><span class="chip-label">Chắc 0đ</span><span class="chip-count"></span>
+    </button>
+    <button class="chip" data-filter="likely">
+      <i class="cdot warn"></i><span class="chip-label">Có thể 0đ</span><span class="chip-count"></span>
+    </button>
+    <button class="chip" data-filter="unknown">
+      <i class="cdot unknown"></i><span class="chip-label">Chưa rõ</span><span class="chip-count"></span>
+    </button>
+  </nav>
+
+  <section class="tree">
+    <div class="search-wrap">
+      <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zm10 2l-4.35-4.35"/></svg>
+      <input id="searchBox" class="search" type="search" placeholder="Tìm model..." autocomplete="off"
+             autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" />
+    </div>
+    <div id="treeRoot"></div>
+  </section>
+
+  <nav class="tabs" aria-label="Bảng khác">
+    <button class="tab on" data-tab="keys">API Keys</button>
+    <button class="tab" data-tab="health">Sức khoẻ</button>
+    <button class="tab" data-tab="log">Hoạt động</button>
+  </nav>
+
+  <section class="tabpane" id="paneKeys"><div id="keysRoot"></div></section>
+  <section class="tabpane" id="paneHealth" hidden><div id="healthRoot"></div></section>
+  <section class="tabpane" id="paneLog" hidden><div class="log" id="logRoot"></div></section>
+</main>
+
+<!-- ============================ bottom tab bar ============================
+     The four things a person does repeatedly, always reachable without a
+     scroll. This is the reason the drawers above exist at all. -->
+<nav class="tabbar" aria-label="Điều hướng chính">
+  <button class="tabbar-btn on" data-goto="drawer">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h18"/></svg>
+    <span>URL</span>
+  </button>
+  <button class="tabbar-btn" data-goto="scan">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg>
+    <span>Quét</span>
+  </button>
+  <button class="tabbar-btn" data-goto="keys">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.8 7.8 5.5 5.5 0 0 1 7.8-7.8zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3"/></svg>
+    <span>API</span>
+  </button>
+  <button class="tabbar-btn" data-goto="health">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+    <span>Sức khoẻ</span>
+  </button>
+</nav>
+
+<!-- ============================ sheets ============================
+     Bottom sheets, not centred desktop dialogs. A dialog in the middle of a
+     phone screen puts its buttons where the thumb is not, and it covers the
+     list the user is reading to decide what to tap next. -->
+<dialog id="modelDialog" class="sheet">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title" id="modelTitle"></h3>
+    <p class="hint" id="modelHint"></p>
+    <button id="modelClose" class="sheet-x" aria-label="Đóng">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  <div class="sheet-body">
+    <!-- URL and MODEL are the two things a user copies out of this screen, so
+         they are the first thing on it and each has its own copy button. -->
+    <div class="field">
+      <div class="field-label">
+        <span>URL</span>
+        <button class="mini" data-copy="url">chép</button>
+      </div>
+      <button id="boxUrl" class="copybox copybox-tap"></button>
+    </div>
+
+    <div class="field">
+      <div class="field-label">
+        <span>MODEL</span>
+        <button class="mini" data-copy="model">chép</button>
+      </div>
+      <button id="boxModel" class="copybox copybox-tap"></button>
+    </div>
+
+    <!-- Everything the provider published about this model, plus what we
+         measured ourselves. A field nobody published is left out rather than
+         shown as a dash: "they did not say" and "they said zero" are
+         different answers. -->
+    <div class="field">
+      <div class="field-label"><span>THÔNG TIN MODEL</span></div>
+      <div id="modelInfo" class="modelinfo"></div>
+    </div>
+
+    <div class="field">
+      <div class="field-label">
+        <span>API CỦA URL NÀY (<span id="keyCount">0</span>)</span>
+      </div>
+      <div id="lockAllKeys" class="keylockall"></div>
+      <div id="keyRows" class="keyrows"></div>
+    </div>
+  </div>
+
+  <div class="sheet-foot">
+    <button id="btnCheckOne" class="primary">✓ CHECK TẤT CẢ</button>
+    <button id="btnAddKey" class="small">+ THÊM API</button>
+  </div>
+</dialog>
+
+<dialog id="keyDialog" class="sheet sheet-form">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title">Thêm API key vào URL</h3>
+    <p class="hint" id="keyHint"></p>
+  </div>
+  <div class="sheet-body">
+    <div class="warnbox">
+      Key gắn vào <b>URL</b>, không gắn riêng từng model.
+      Mọi model của URL này đều dùng được key này.
+    </div>
+    <input id="keySecret" type="password" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="dán key vào đây" />
+  </div>
+  <div class="sheet-foot">
+    <button id="keyConfirm" class="primary">Thêm + check</button>
+    <button id="keyCancel" class="small">Huỷ</button>
+  </div>
+</dialog>
+
+<dialog id="delDialog" class="sheet sheet-form">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title">Xoá API key</h3>
+    <p class="hint" id="delHint"></p>
+  </div>
+  <div class="sheet-body">
+    <div class="warnbox">
+      Key sẽ bị xoá khỏi storage. Dán lại key này sẽ không tự quay về.
+    </div>
+    <input id="delSecret" type="text" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="dán lại key để khôi phục" />
+  </div>
+  <div class="sheet-foot">
+    <button id="delConfirm" class="danger">Xoá</button>
+    <button id="delRestore" class="small" hidden>Khôi phục</button>
+    <button id="delCancel" class="small">Huỷ</button>
+  </div>
+</dialog>
+
+<dialog id="addUrlDialog" class="sheet sheet-form">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title">Thêm URL</h3>
+    <p class="hint">Hợp thức tự giao thức OpenAI: GET /models, POST /chat/completions</p>
+  </div>
+  <div class="sheet-body">
+    <label for="urlName">Tên</label>
+    <input id="urlName" type="text" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="vd: gateway của tôi" />
+    <label for="urlBase">Base URL</label>
+    <input id="urlBase" type="url" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="https://example.com/v1" />
+  </div>
+  <div class="sheet-foot">
+    <button id="urlConfirm" class="primary">Thêm + quét</button>
+    <button id="urlCancel" class="small">Huỷ</button>
+  </div>
+</dialog>
+
+<dialog id="modelAddDialog" class="sheet sheet-form">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title">Thêm model thủ công</h3>
+    <p class="hint" id="manualHint"></p>
+  </div>
+  <div class="sheet-body">
+    <label for="manualModel">Model ID</label>
+    <input id="manualModel" type="text" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="vd: fledge-alpha-free" />
+    <label for="manualFree">Trạng thái</label>
+    <select id="manualFree">
+      <option value="FREE_LIKELY">Nghi là miễn phí</option>
+      <option value="FREE_UNKNOWN">Chưa rõ</option>
+      <option value="FREE_VERIFIED">Miễn phí (tôi xác minh)</option>
+    </select>
+  </div>
+  <div class="sheet-foot">
+    <button id="manualConfirm" class="primary">Thêm</button>
+    <button id="manualCancel" class="small">Huỷ</button>
+  </div>
+</dialog>
+
+<!-- ============================ row actions ============================
+     A long press on any row opens this, so every action that used to need a
+     crowded row of buttons is one press away without cluttering the list. -->
+<dialog id="rowMenu" class="sheet sheet-actions">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <!-- The same three parts every other sheet has, in the same order. A sheet
+       whose header sits loose in the flex column gets its title and its action
+       list pushed around by the length of the list. -->
+  <div class="sheet-head">
+    <h3 class="dlg-title" id="rowMenuTitle"></h3>
+    <p class="hint" id="rowMenuSub"></p>
+  </div>
+  <div id="rowMenuActions" class="action-list"></div>
+  <div class="sheet-foot">
+    <button id="rowMenuCancel" class="small block">Đóng</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="./app.js?v=7"></script>
+</body>
+</html>
