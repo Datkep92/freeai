@@ -6,10 +6,12 @@
  * actually remove a row from rotation is invisible in the data and only shows
  * up when a request goes somewhere the user did not want.
  */
-import { describe, it, assert, assertEqual } from './harness.js';
+import { describe, it, assert, assertEqual, assertDeepEqual } from './harness.js';
 import { MemoryStorage } from '../core/storage.js';
-import { Priority, SCOPE, ROTATION, LEVELS, sortByPriority, partitionByLock, speedOf } from '../core/priority.js';
+import { Priority, SCOPE, ROTATION, LEVELS, SETTINGS_ID, sortByPriority, partitionByLock, speedOf } from '../core/priority.js';
 import { MetricsRegistry, measure, accumulate, readUsage, emptyMetrics, compareBySpeed } from '../core/metrics.js';
+
+const now = new Date().toISOString();
 
 function row(id, extra = {}) {
   return { id, providerId: 'p1', modelId: id, ...extra };
@@ -232,6 +234,47 @@ export function registerRotationCases() {
       const view = await priority.forProvider({ id: 'url1', priority: { skipped: { models: ['local-locked'] } } });
       assert(view.skippedModels.has('global-locked'), 'the global lock still applies here');
       assert(view.skippedModels.has('local-locked'), 'and the URL adds its own');
+    });
+
+    it('RX15b: the priority settings are stored in the shape the schema declares', async () => {
+      // The settings store is a key/value store: `{ id, value }`. A row written
+      // with the fields flat is the other shape, and having both in one store is
+      // how a reader ends up guessing which one it is looking at.
+      const storage = new MemoryStorage();
+      const priority = new Priority(storage);
+      await priority.setSkipped(SCOPE.MODEL, 'm1');
+
+      const row = await storage.get('settings', SETTINGS_ID);
+      assertEqual(row.id, SETTINGS_ID);
+      assert(Array.isArray(row.value?.skipped?.[SCOPE.MODEL]), 'the payload lives under `value`');
+      assertEqual(row.rotation, undefined, 'and not duplicated onto the row');
+      assert(Number.isFinite(Date.parse(row.updatedAt)), 'with a timestamp');
+      assertDeepEqual(row.value.skipped[SCOPE.MODEL], ['m1'], 'and the lock it was asked to set');
+    });
+
+    it('RX15c: a settings row written flat is still read', async () => {
+      // A database written before `value` existed, or one that went through the
+      // migration on an older build. Reading only `value` would drop the user's
+      // lock list on upgrade, which is the worst possible time to lose it.
+      const storage = new MemoryStorage();
+      await storage.put('settings', {
+        id: SETTINGS_ID,
+        rotation: ROTATION.ROUND_ROBIN,
+        skipped: { [SCOPE.MODEL]: ['kept-from-before'] },
+        order: { [SCOPE.MODEL]: [] },
+        updatedAt: now,
+      });
+
+      const state = await new Priority(storage).load();
+      assertEqual(state.rotation, ROTATION.ROUND_ROBIN, 'the old row is understood');
+      assertEqual(state.skipped[SCOPE.MODEL][0], 'kept-from-before', 'and so is the lock list');
+      assert(Array.isArray(state.skipped[SCOPE.KEY]), 'with the other scopes filled in behind it');
+
+      // And writing over it replaces it with the declared shape.
+      await new Priority(storage).setSkipped(SCOPE.KEY, 'k1');
+      const rewritten = await storage.get('settings', SETTINGS_ID);
+      assert(rewritten.value?.skipped?.[SCOPE.KEY]?.includes('k1'), 'the new row is the declared shape');
+      assertEqual(rewritten.skipped, undefined, 'the flat fields are gone');
     });
 
     it('RX16: clearing the settings keeps the rest of the provider row', async () => {

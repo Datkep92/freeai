@@ -1,4 +1,5 @@
 import { run } from './harness.js';
+import { registerDbCases } from './cases-db.js';
 import { registerCoreCases } from './cases-core.js';
 import { registerVerifyCases } from './cases-verify.js';
 import { registerWiringCases } from './cases-wiring.js';
@@ -10,6 +11,7 @@ import { registerRouterLockCases } from './cases-router-locks.js';
 import { registerShellCases } from './cases-shell.js';
 import { registerModelInfoCases } from './cases-model-info.js';
 
+registerDbCases();
 registerCoreCases();
 registerVerifyCases();
 registerWiringCases();

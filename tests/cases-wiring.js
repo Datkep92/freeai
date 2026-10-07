@@ -59,14 +59,31 @@ export function registerWiringCases() {
     });
 
     it('WR7: the controls the user asked for are present', () => {
-      // The global paste box and CHECK API were removed on purpose: keys are
-      // added per URL, so a second bulk path would only let a key be filed
-      // under a URL the user never chose.
-      for (const id of ['btnScanAll', 'btnAddUrl', 'btnAddModel', 'btnAddKeyUrl', 'btnAddKey', 'keyDialog', 'addUrlDialog', 'modelDialog']) {
+      for (const id of ['btnScanAll', 'btnAddUrl', 'appbarAddUrl', 'btnAddKey', 'btnTestModel', 'btnBulk', 'keyDialog', 'addUrlDialog', 'modelDialog', 'urlSearch', 'urlSearchClear', 'urlSortFree']) {
         assert(htmlSource.includes('id="' + id + '"'), 'index.html must declare #' + id);
         assert(appSource.includes("'" + id + "'"), 'app.js must wire #' + id);
       }
-      for (const gone of ['pasteKeys', 'btnCheckAll', 'corsBanner']) {
+
+      // The two URL classes the drawer's classifier offers. They are buttons in
+      // the markup rather than a select, because the user asked for a button and
+      // because a two-answer question is answered faster by two taps than by
+      // opening a list.
+      for (const cls of ['nokey', 'needkey']) {
+        assert(
+          htmlSource.includes('data-urlclass="' + cls + '"'),
+          'index.html must offer the "' + cls + '" URL class'
+        );
+      }
+      assert(
+        appSource.includes("'.classbtn'"),
+        'and every class button has to be wired in app.js'
+      );
+      // The global paste box and CHECK API were removed on purpose: keys are
+      // added per URL, so a second bulk path would only let a key be filed
+      // under a URL the user never chose. The two header buttons went the same
+      // way for the same class of reason: they acted on "the URL that is open",
+      // and the main list no longer has one.
+      for (const gone of ['pasteKeys', 'btnCheckAll', 'corsBanner', 'btnAddModel', 'btnAddKeyUrl']) {
         assert(!htmlSource.includes('id="' + gone + '"'), '#' + gone + ' must be gone from index.html');
         assert(!appSource.includes("'" + gone + "'"), 'and nothing in app.js may look it up');
       }
@@ -219,30 +236,29 @@ export function registerWiringCases() {
     it('WR17: the main list filters paid models out before anything else', () => {
       const render = appSource.slice(appSource.indexOf('async function render()'), appSource.indexOf('function modelRow'));
       assert(
-        render.includes('isFree(m)'),
+        render.includes('m.freeStatus !== FREE.PAID'),
         'render() must drop paid models before the user filter runs'
       );
       assert(
-        render.indexOf('isFree(m)') < render.indexOf('match(m)'),
-        'the free filter has to come first, or "all" could re-admit them'
+        render.indexOf('m.freeStatus !== FREE.PAID') < render.indexOf('matcher(model)'),
+        'the paid drop has to come first, or a chip could re-admit them'
+      );
+      assert(
+        render.includes('const matcher = FILTERS[activeFilter]'),
+        'and the chip only narrows the set the drop produced'
       );
     });
 
     it('WR18: no slice or limit truncates the model list', () => {
       // A cap here would hide models the user already scanned for, and the
       // count above the list would stop matching what is on screen.
-      const render = appSource.slice(
-        appSource.indexOf('async function render()'),
+      const section = appSource.slice(
+        appSource.indexOf('function urlSection'),
         appSource.indexOf('function modelRow')
       );
-      assert(!/visible\s*\.\s*slice\(/.test(render), 'the list must not be sliced');
-      // Scoped to the list-building statements. The settings panel above it
-      // deliberately takes the first four names for a one-line summary, and
-      // that is a summary, not a truncation of what gets rendered.
-      const builds = render.slice(render.indexOf('const group ='), render.indexOf('root.append(group)'));
-      assert(!/\.slice\(0,\s*\d+/.test(builds), 'and the rendered list must not take a first-N');
+      assert(!/\.slice\(0,\s*\d+/.test(section), 'the rendered list must not take a first-N');
       assert(
-        builds.includes('for (const model of visible)'),
+        section.includes('for (const model of models) group.append(modelRow(provider, model, keys))'),
         'every surviving row is rendered'
       );
     });

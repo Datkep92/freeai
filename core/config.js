@@ -40,6 +40,28 @@ export const CONFIG = {
     maxSamples: 50,
   },
 
+  // ---- Bulk probe ----
+  // Running one key across many models is the opposite of the verifier: that one
+  // stops at the first success, this one is trying to find out how many models
+  // are alive. So it spends real requests on purpose, and every limit here is
+  // about keeping that bounded.
+  bulkProbe: {
+    // Enough to tell whether a URL is worth keeping without spending a minute
+    // on it, and cheap enough to run again after a rescan.
+    defaultLimit: 20,
+    // Above this the run takes longer than anyone will sit through, so the
+    // number is capped rather than trusted.
+    maxLimit: 200,
+    // Same shape as the manual test: enough to prove the model answers, small
+    // enough that 200 of them is still a rounding error against a quota.
+    maxTokens: 8,
+    // How many failures that look like the secret's fault, rather than the
+    // model's, before the run stops itself. A key that is dead, exhausted or
+    // throttled for the whole host answers the same way on every model, so
+    // retrying it on the hundredth model only wastes requests.
+    keyFailureStreak: 5,
+  },
+
   // ---- Cache (plan 9) ----
   // Opening the UI must not re-scan the world. Cached rows render instantly
   // and a stale refresh runs in the background.

@@ -156,8 +156,10 @@ export class KeyVerifier {
 
   /** Verify every key of one URL. */
   async verifyProvider({ providerId, run, onProgress } = {}) {
-    const keys = await this.storage.list('keys');
-    const mine = keys.filter((k) => k.providerId === providerId);
+    // Asked of the index. "Check this URL" reads every key on the machine and
+    // throws away the ones belonging to another URL, which grows with the
+    // registry instead of with the URL being checked.
+    const mine = await this.storage.findMany('keys', { where: { providerId } });
     const results = [];
     let requests = 0;
 

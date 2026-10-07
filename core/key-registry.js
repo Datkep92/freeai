@@ -20,28 +20,33 @@ export class KeyRegistry {
   }
 
   async list(providerId = null) {
-    const all = await this.storage.list('keys');
-    return providerId ? all.filter((k) => k.providerId === providerId) : all;
+    return providerId ? this.storage.findMany('keys', { where: { providerId } }) : this.storage.list('keys');
   }
 
   async get(id) {
     return this.storage.get('keys', id);
   }
 
+  /**
+   * The same secret on the same URL is one key.
+   *
+   * Asked of the unique index `by_provider_fingerprint`, so it does not matter
+   * how many keys the machine holds.
+   */
   async findByFingerprint(providerId, fingerprint) {
-    const all = await this.list(providerId);
-    return all.find((k) => k.fingerprint === fingerprint) ?? null;
+    return this.storage.find('keys', { providerId, fingerprint });
   }
 
   /** Has the user deleted this key for this provider? */
   async isDeleted(providerId, fingerprint) {
-    const store = await this.storage.list('deletedKeys');
-    return store.some((d) => d.identity === `${providerId}::${fingerprint}`);
+    const row = await this.storage.find('deletedKeys', { identity: `${providerId}::${fingerprint}` });
+    return row !== null;
   }
 
   async listDeleted(providerId = null) {
-    const all = await this.storage.list('deletedKeys');
-    return providerId ? all.filter((d) => d.providerId === providerId) : all;
+    return providerId
+      ? this.storage.findMany('deletedKeys', { where: { providerId } })
+      : this.storage.list('deletedKeys');
   }
 
   /**
@@ -97,9 +102,11 @@ export class KeyRegistry {
     const key = await this.get(id);
     if (!key) return false;
 
-    const mappings = await this.storage.list('mappings');
-    for (const mapping of mappings.filter((m) => m.keyId === id)) {
-      await this.storage.remove('mappings', mapping.id);
+    // The mappings are found through the index rather than by reading every
+    // verdict on the machine, then dropped in one batch.
+    const mappings = await this.storage.findMany('mappings', { where: { keyId: id } });
+    if (mappings.length) {
+      await this.storage.removeMany('mappings', mappings.map((m) => m.id));
     }
     await this.storage.remove('keys', id);
 
@@ -119,13 +126,16 @@ export class KeyRegistry {
   async restore(providerId, secret) {
     const trimmed = String(secret ?? '').trim();
     const fingerprint = await fingerprintSecret(trimmed);
-    const store = await this.storage.list('deletedKeys');
-    const record = store.find((d) => d.identity === `${providerId}::${fingerprint}`);
+    const record = await this.storage.find('deletedKeys', { identity: `${providerId}::${fingerprint}` });
     if (!record) return { key: null, reason: 'NOT_DELETED' };
 
-    for (const row of store.filter((d) => d.identity === record.identity)) {
-      await this.storage.remove('deletedKeys', row.id);
-    }
+    // The identity is unique, so this is one row. Removing by identity rather
+    // than by the remembered id means a tombstone written by an older version
+    // - with a different id - is cleared too, and the key really comes back.
+    await this.storage.removeMany(
+      'deletedKeys',
+      (await this.storage.findMany('deletedKeys', { where: { identity: record.identity } })).map((r) => r.id)
+    );
     return this.add({ providerId, secret: trimmed });
   }
 
@@ -139,6 +149,9 @@ export class KeyRegistry {
     const trimmed = String(secret ?? '').trim();
     if (!trimmed) return null;
     const fingerprint = await fingerprintSecret(trimmed);
+    // The secret is stored once. It used to be written a second time as `raw`,
+    // which was the same string in the same row: two copies of a credential on
+    // disk, one more place for a leak to come from, and nothing ever read it.
     const record = {
       id: makeId('unr'),
       kind: 'KEY',
@@ -146,7 +159,6 @@ export class KeyRegistry {
       masked: maskSecret(trimmed),
       secret: trimmed,
       hint,
-      raw: trimmed,
       createdAt: isoNow(),
     };
     await this.storage.put('unresolved', record);

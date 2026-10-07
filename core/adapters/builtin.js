@@ -31,6 +31,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://openrouter.ai/api/v1',
+    websiteURL: 'https://openrouter.ai/docs',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -46,6 +47,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://opencode.ai/zen/v1',
+    websiteURL: 'https://opencode.ai/docs',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -61,6 +63,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://integrate.api.nvidia.com/v1',
+    websiteURL: 'https://build.nvidia.com/',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -85,6 +88,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.groq.com/openai/v1',
+    websiteURL: 'https://console.groq.com/keys',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -98,6 +102,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.cerebras.ai/v1',
+    websiteURL: 'https://cloud.cerebras.ai/platform',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -117,6 +122,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    websiteURL: 'https://aistudio.google.com/apikey',
     protocol: 'openai-compatible',
     modelsPath: '/../models',
     chatPath: '/chat/completions',
@@ -130,6 +136,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.mistral.ai/v1',
+    websiteURL: 'https://console.mistral.ai/api-keys',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -143,6 +150,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.deepseek.com/v1',
+    websiteURL: 'https://platform.deepseek.com/api_keys',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -156,6 +164,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.x.ai/v1',
+    websiteURL: 'https://console.x.ai/',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -169,6 +178,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.together.xyz/v1',
+    websiteURL: 'https://api.together.ai/settings/api-keys',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -182,6 +192,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://text.pollinations.ai/openai',
+    websiteURL: 'https://pollinations.ai/docs',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -200,6 +211,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://api.sambanova.ai/v1',
+    websiteURL: 'https://docs.sambanova.ai/',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -213,6 +225,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://api.aimlapi.com/v1',
+    websiteURL: 'https://aimlapi.com/app/keys',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -226,6 +239,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://llm.chutes.ai/v1',
+    websiteURL: 'https://chutes.ai/docs',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -239,6 +253,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.openai.com/v1',
+    websiteURL: 'https://platform.openai.com/docs',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -252,6 +267,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.z.ai/api/paas/v4',
+    websiteURL: 'https://docs.z.ai/',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -265,6 +281,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.fireworks.ai/inference/v1',
+    websiteURL: 'https://docs.fireworks.ai/',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -278,6 +295,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://api.deepinfra.com/v1/openai',
+    websiteURL: 'https://deepinfra.com/dash/api_keys',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -291,6 +309,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: alive, but 401/403 without a key.
     verified: 'NEEDS_KEY',
     baseURL: 'https://api.hyperbolic.xyz/v1',
+    websiteURL: 'https://hyperbolic.xyz/dashboard/settings',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -304,6 +323,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://api.novita.ai/v3/openai',
+    websiteURL: 'https://novita.ai/dashboard/key',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -317,6 +337,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://ai-gateway.vercel.sh/v1',
+    websiteURL: 'https://vercel.com/docs/ai-gateway',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -330,6 +351,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://models.github.ai/inference',
+    websiteURL: 'https://docs.github.com/en/github-models',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',
@@ -343,6 +365,7 @@ export const BUILTIN = {
     // Measured 2026-10 by probe-urls.mjs: /models answers 200 with no key.
     verified: 'OPEN',
     baseURL: 'https://api.apifree.ai/v1',
+    websiteURL: 'https://apifree.ai/docs',
     protocol: 'openai-compatible',
     modelsPath: '/models',
     chatPath: '/chat/completions',

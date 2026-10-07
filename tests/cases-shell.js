@@ -37,10 +37,17 @@ function shellList() {
   return [...block.matchAll(/'\.\/([^']*)'/g)].map((m) => './' + m[1]);
 }
 
-/** Every local file the app tree can reach at runtime. */
+/**
+ * Every local file the app tree can reach at runtime.
+ *
+ * `core/db` is in this list because storage.js imports it, which means the
+ * offline shell needs those six files just as much as it needs the registry
+ * modules. It was missing, so an offline load served app.js, then failed on the
+ * first `import` from core/storage.js and left a blank page with no error.
+ */
 function projectFiles() {
   const out = [];
-  for (const dir of ['core', 'core/adapters']) {
+  for (const dir of ['core', 'core/adapters', 'core/db']) {
     for (const name of fs.readdirSync(path.join(rootDir, dir))) {
       if (name.endsWith('.js')) out.push('./' + dir + '/' + name);
     }

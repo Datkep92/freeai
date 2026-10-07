@@ -15,9 +15,11 @@ import { KeyRegistry } from './core/key-registry.js';
 import { Mapper } from './core/mapper.js';
 import { Scanner } from './core/scanner.js';
 import { KeyVerifier } from './core/key-verifier.js';
+import { BulkProbe, STOP } from './core/bulk-probe.js';
+import { CONFIG } from './core/config.js';
 import { Router } from './core/router.js';
 import { STATUS, STATUS_META } from './core/statuses.js';
-import { FREE, FREE_META } from './core/free-detector.js';
+import { FREE, FREE_META, isFreeModel, isUnknownPrice } from './core/free-detector.js';
 import { fingerprintSecret, maskSecret } from './core/util.js';
 import { Priority, SCOPE, ROTATION, sortByPriority } from './core/priority.js';
 import { MetricsRegistry, formatMetric } from './core/metrics.js';
@@ -48,7 +50,9 @@ const ICONS = {
   check: '<path d="M20 6L9 17l-5-5"/>',
   trash: '<path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6m3 0v13.5A1.5 1.5 0 0 1 17.5 21h-11A1.5 1.5 0 0 1 5 19.5V6M10 11v6M14 11v6"/>',
   grip: '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3.2 9h17.6M3.2 15h17.6M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.8v.2"/>',
+  dots: '<circle cx="12" cy="5.2" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="18.8" r="1.7"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   scan: '<path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/>',
   refresh: '<path d="M20 11A8 8 0 0 0 6.3 6.3L4 8.5M4 13a8 8 0 0 0 13.7 4.7L20 15.5"/><path d="M4 4v4.5h4.5M20 20v-4.5h-4.5"/>',
@@ -103,6 +107,7 @@ const keys = new KeyRegistry(storage);
 const mapper = new Mapper(storage);
 const scanner = new Scanner(storage, { providers, models });
 const verifier = new KeyVerifier(storage, { providers, models, mapper });
+const bulkProber = new BulkProbe(storage, { providers, models, mapper });
 const priority = new Priority(storage);
 const metrics = new MetricsRegistry(storage);
 // The router is given the same rules the UI edits, so a locked row really is
@@ -119,14 +124,31 @@ let metricsMap = new Map();
 // module level so the row builder needs only the provider.
 let modelCountByProvider = new Map();
 let keyCountByProvider = new Map();
+// Every free model of each URL, kept for the URL menu: "lock every model of this
+// URL" has to name the ids, and that menu is built without reading storage.
+let modelIdsByProvider = new Map();
 
-let activeFilter = 'all';
+let activeFilter = 'free';
 let searchTerm = '';
 let busy = false;
 let currentRun = null;
 let currentModel = null;   // { providerId, modelId }, set when a model dialog opens
-let openProviderId = null; // which URL the main list is showing
+// The URL the drawer last jumped to. It marks a block and scrolls to it; it
+// never filters anything, because the main list shows every URL at once.
+let focusProviderId = null;
+// Which URL and model a sheet is asking about. Both sheets can be opened from a
+// row that is not "the current model", so neither may read `currentModel`: a
+// manual test opened from a model's action sheet would otherwise run against
+// whichever model was opened last - or against nothing at all.
+let testTarget = null;     // { providerId, modelId }
+let bulkProviderId = null; // whose key list the bulk sheet is showing
 let URL_SORT = 'manual';  // how the drawer is ordered; see URL_SORTS
+// What the drawer is narrowed to. Separate from the model search because the two
+// answer different questions: `searchTerm` picks models out of the flat list,
+// while these pick URLs out of the drawer. Sharing one would make typing a URL
+// name in the drawer silently hide models from the list behind it.
+let urlSearchTerm = '';
+let urlClass = 'all';     // 'all' | 'nokey' | 'needkey'; see URL_CLASSES
 let revealedKeys = new Set();
 
 // ---------------------------------------------------------------- helpers
@@ -149,7 +171,7 @@ function log(text) {
 
 function setBusy(value) {
   busy = value;
-  for (const id of ['btnScanAll', 'btnAddUrl', 'btnAddModel', 'btnAddKeyUrl']) {
+  for (const id of ['btnScanAll', 'btnAddUrl', 'appbarAddUrl']) {
     const el = $(id);
     if (el) el.disabled = value;
   }
@@ -199,41 +221,48 @@ function timeAgo(iso) {
 // ---------------------------------------------------------------- tree
 
 /**
- * Every model shown in the main list is a free one.
+ * Every model shown in the main list is a 0đ one.
  *
- * "Free" here means any level that is not PAID: a verified zero price, a name
- * that says so, or simply nothing known yet. A model with a price above zero is
- * never listed, because this screen exists to answer "what can I use for
- * nothing" and a paid row in the middle of that list is a trap.
+ * "0đ" means exactly two things, and both are evidence rather than a guess: the
+ * provider published a price of zero, or the model's name says free. That rule
+ * lives in core/free-detector.js so the list, the chips and every count that
+ * reads "N model 0đ" answer the same question the same way.
  *
- * The chips then narrow within that free set by how much we know. `paid` is
- * gone on purpose - it is the filter that would bring the trap back.
+ * A model whose price nobody published is not in this list. A model with a price
+ * above zero is not in it under any chip: the screen exists to answer "what can I
+ * use for nothing", and a paid row inside it is a trap.
  */
-const isFree = (model) => model.freeStatus !== FREE.PAID;
 
 /**
- * The four chips.
+ * The three chips.
  *
- * These are degrees of certainty about one claim, not four kinds of model, so
- * each matcher asks about the same field and nothing here needs to know about
- * the others. `unknown` is written as "not the two above" rather than
- * "equals FREE_UNKNOWN" on purpose: a record written by an older version of
- * the app, or by a provider that published no status at all, arrives with no
- * `freeStatus` value, and an equality test would drop it from every chip and
- * leave the row invisible with no way to find it.
+ * Each matcher asks about the same field and none of them needs to know about
+ * the others. `unknown` deliberately includes a record with no `freeStatus` at
+ * all - one written by an older version of the app, or by a provider that
+ * published no status - because an equality test would drop such a row from
+ * every chip and leave it invisible with no way to find it. It is the way back
+ * to the models the default list hides, and hiding them is not the same as
+ * throwing them away.
  */
 const FILTERS = {
-  all: () => true,
-  verified: (m) => m.freeStatus === FREE.FREE_VERIFIED,
-  likely: (m) => m.freeStatus === FREE.FREE_LIKELY,
-  unknown: (m) => m.freeStatus !== FREE.FREE_VERIFIED && m.freeStatus !== FREE.FREE_LIKELY,
+  free: (m) => isFreeModel(m),
+  zero: (m) => m.freeStatus === FREE.FREE_VERIFIED,
+  unknown: (m) => isUnknownPrice(m),
 };
 
 // Kept so a stale bookmarked chip name cannot silently widen the list.
 FILTERS.paid = () => false;
+FILTERS.all = FILTERS.free;
+
+/** What the count under the title calls the rows it is counting. */
+const FILTER_LABEL = {
+  free: 'model 0đ',
+  zero: 'model chắc 0đ',
+  unknown: 'model chưa rõ giá',
+};
 
 function filterBy(filter) {
-  activeFilter = FILTERS[filter] ? filter : 'all';
+  activeFilter = FILTERS[filter] ? filter : 'free';
   for (const chip of document.querySelectorAll('.chip')) {
     chip.classList.toggle('on', chip.dataset.filter === activeFilter);
   }
@@ -284,6 +313,19 @@ function toggleDrawer() {
 }
 
 /**
+ * Scroll the flat list to one URL's block.
+ *
+ * Walked from the drawn children rather than by a CSS attribute selector: a
+ * provider id is generated, and a selector built from it would be one quoting
+ * mistake away from throwing on every tap.
+ */
+function scrollToProvider(providerId) {
+  const root = $('treeRoot');
+  const section = [...(root?.children ?? [])].find((el) => el.dataset?.providerId === providerId);
+  section?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+}
+
+/**
  * How the drawer is ordered.
  *
  * `manual` is the arrangement the user dragged, and it is the default because a
@@ -304,6 +346,78 @@ const URL_SORTS = {
     (keyCountByProvider.get(b.id) ?? 0) - (keyCountByProvider.get(a.id) ?? 0) ||
     a.name.localeCompare(b.name, 'vi'),
 };
+
+/**
+ * The two URL classes, plus the way back to all of them.
+ *
+ * This is a different question from how the list is ordered, and it gets a
+ * different control: "cần key" and "không cần key" are facts about a URL that
+ * a scan already decided, while the order is only how those facts are read.
+ *
+ * The third class a URL can hide in - "chưa kiểm tra" - has no button on
+ * purpose. It is not a kind of URL the user chose; it is a scan that has not
+ * happened yet, and offering it as a peer of the other two would make "chưa
+ * biết" look like a standing classification instead of a gap to close.
+ */
+const URL_CLASSES = {
+  all: () => true,
+  nokey: (p) => requirementOf(p) === KEY_REQ.NONE,
+  needkey: (p) => requirementOf(p) === KEY_REQ.REQUIRED,
+};
+
+/** Does this URL match what the drawer's search box was given? */
+function urlMatchesSearch(provider, needle) {
+  if (!needle) return true;
+  return (
+    provider.name.toLowerCase().includes(needle) ||
+    String(provider.baseURL ?? '').toLowerCase().includes(needle)
+  );
+}
+
+/**
+ * The drawer is narrowed to something.
+ *
+ * A narrowed drawer is a view, not the list the user arranged: the drag order is
+ * read back from whatever rows are on screen, so dragging while a filter hides
+ * half the URLs would write an order that silently dropped the hidden half.
+ * Dragging is therefore offered only when every URL is drawn.
+ */
+function urlsFiltered() {
+  return urlSearchTerm.trim() !== '' || urlClass !== 'all';
+}
+
+/**
+ * Paint the state of the URL controls: which class is on, whether the free-count
+ * order is on, and whether the search box has anything to clear.
+ *
+ * Called from the render and from every handler, so the buttons show the state
+ * the app is actually in even when a render was triggered by something else.
+ */
+function markUrlControls() {
+  for (const btn of document.querySelectorAll('.classbtn')) {
+    const on = btn.dataset.urlclass === urlClass;
+    btn.classList.toggle('on', on);
+    btn.setAttribute?.('aria-pressed', String(on));
+  }
+  const free = $('urlSortFree');
+  if (free) {
+    const on = URL_SORT === 'models';
+    free.classList.toggle('on', on);
+    free.setAttribute?.('aria-pressed', String(on));
+  }
+  const clear = $('urlSearchClear');
+  if (clear) clear.hidden = !urlSearchTerm;
+
+  // The gesture legend tells the truth about the list it sits under. While a
+  // filter is on, dragging is off - so the line says what to do to get it back
+  // instead of naming a gesture that would do nothing.
+  const hint = $('sideHint');
+  if (hint) {
+    hint.textContent = urlsFiltered()
+      ? 'Đang lọc URL · xoá ô tìm hoặc bấm "Tất cả" để kéo sắp xếp lại'
+      : 'Nhấn giữ một dòng để kéo · bấm biểu tượng khoá để loại khỏi vòng quay';
+  }
+}
 
 /**
  * Apply the chosen order to the drawer.
@@ -364,14 +478,31 @@ async function renderSidebar(providerRows, modelRows, keyRows) {
     keyCountByProvider.set(key.providerId, (keyCountByProvider.get(key.providerId) ?? 0) + 1);
   }
 
-  providerRows = sortUrls(providerRows);
+  // The whole list, before the drawer's own search and classification narrow it.
+  // Locking every URL and the drag order are both facts about every URL the user
+  // owns, so neither may be derived from the rows a transient view happens to
+  // draw.
+  const allProviders = providerRows;
 
-  if (!providerRows.length) {
+  const classMatch = URL_CLASSES[urlClass] ?? URL_CLASSES.all;
+  const needle = urlSearchTerm.trim().toLowerCase();
+  providerRows = sortUrls(
+    providerRows.filter((p) => classMatch(p) && urlMatchesSearch(p, needle))
+  );
+
+  markUrlControls();
+
+  if (!allProviders.length) {
     root.append(emptyNote('Chưa có URL nào.'));
     return;
   }
 
-  mountLockAll($('lockAllUrls'), SCOPE.PROVIDER, providerRows.map((p) => p.id));
+  mountLockAll($('lockAllUrls'), SCOPE.PROVIDER, allProviders.map((p) => p.id));
+
+  if (!providerRows.length) {
+    root.append(emptyNote('Không có URL nào khớp. Xoá ô tìm URL hoặc chọn lại cách phân loại.'));
+    return;
+  }
 
   // Grouped by what a real scan actually returned, not by what a URL is
   // expected to need. A hand-added URL that has never been probed lands in its
@@ -398,7 +529,12 @@ async function renderSidebar(providerRows, modelRows, keyRows) {
   // A heading is not draggable and carries no sortId, so it can never be picked
   // up; it only anchors its group. The ids written back are therefore exactly
   // the URLs, in the order they appear across all three groups.
-  makeSortable(root, providerRows, SCOPE.PROVIDER, (p) => p.id);
+  //
+  // Skipped entirely while a URL search or classification is on. The saved order
+  // is read back from whatever rows are on screen, so a drop made on a narrowed
+  // list would store an order holding only the visible URLs and silently lose
+  // the position of every hidden one.
+  if (!urlsFiltered()) makeSortable(root, providerRows, SCOPE.PROVIDER, (p) => p.id);
 }
 
 /**
@@ -444,7 +580,7 @@ function urlRow(provider) {
   const item = document.createElement('div');
   item.className = 'urlitem';
   item.dataset.providerId = provider.id;
-  if (provider.id === openProviderId) item.classList.add('on');
+  if (provider.id === focusProviderId) item.classList.add('on');
   if (skippedFor(SCOPE.PROVIDER).has(provider.id)) item.classList.add('locked');
 
   const openBtn = document.createElement('button');
@@ -488,10 +624,13 @@ function urlRow(provider) {
     (requirement === KEY_REQ.REQUIRED && api ? `\nĐã có ${api} key trên URL này.` : '');
   openBtn.append(badge);
 
-  openBtn.addEventListener('click', () => {
-    openProviderId = provider.id;
+  openBtn.addEventListener('click', async () => {
+    // The drawer is a jump list, not a filter: the main list always shows every
+    // URL, so picking one here means "take me to that block".
+    focusProviderId = provider.id;
     openDrawer(false);
-    render();
+    await render();
+    scrollToProvider(provider.id);
   });
 
   item.dataset.sortId = provider.id;
@@ -510,20 +649,100 @@ function urlRow(provider) {
  * controls on a row that is 70px tall leaves nothing for the name, which is the
  * one thing the row is actually for.
  */
+/**
+ * The rotation rules, in the order the URL menu steps through them.
+ *
+ * One list, so the label that names the current rule and the value it switches to
+ * can never disagree about which rule is next.
+ */
+const ROTATION_CHOICES = [
+  [ROTATION.SPEED, 'model nhanh nhất trước'],
+  [ROTATION.MANUAL, 'đúng thứ tự tôi kéo'],
+  [ROTATION.ROUND_ROBIN, 'chia đều lượt dùng'],
+];
+
+/**
+ * Everything that can be done to one URL, as a list.
+ *
+ * One sheet per URL, reached from the ⋮ on that URL's header, because the main
+ * list shows every URL at once and a header button can only ever mean one of
+ * them. Everything that used to be a control on the URL's own block - the
+ * rotation rule, lock-every-model, clear-my-settings - lives here now: the block
+ * itself is the data, and the sheet is where the data is configured.
+ */
 function urlActions(provider) {
-  const free = modelCountByProvider.get(provider.id) ?? 0;
+  const modelsHere = modelIdsByProvider.get(provider.id) ?? [];
   const api = keyCountByProvider.get(provider.id) ?? 0;
-  return sheet(provider.name, provider.baseURL, [
-    { icon: 'info', label: 'Mở danh sách model', sub: `${free} model 0đ · ${api} API`, run: () => {
-      openProviderId = provider.id;
-      openDrawer(false);
-      render();
-    } },
+  const lockedHere = modelsHere.filter((m) => skippedFor(SCOPE.MODEL).has(m.id));
+  const allLocked = modelsHere.length > 0 && lockedHere.length === modelsHere.length;
+  const rotation = provider.priority?.rotation ?? priorityState?.rotation ?? ROTATION.SPEED;
+  const step = Math.max(0, ROTATION_CHOICES.findIndex(([value]) => value === rotation));
+
+  const actions = [
     { icon: 'scan', label: 'Quét lại URL này', sub: 'Lấy danh sách model mới nhất', run: () => scanOne(provider) },
+    { icon: 'wrench', label: 'Quét nhiều model', sub: 'Một API key thử nhiều model của URL này', run: () => openBulkDialog(provider) },
     { icon: 'key', label: 'Thêm API key', sub: 'Key gắn vào URL, dùng cho mọi model của nó', run: () => openAddKeyDialog(provider) },
     { icon: 'plus', label: 'Thêm model thủ công', sub: 'Khi URL không công bố danh sách model', run: () => openManualModel(provider) },
+    // The label is the current rule rather than a question about it: a dropdown
+    // hides the answer, and "why is this list in this order" is exactly the
+    // question a user has when a model they expected is not first.
+    {
+      icon: 'refresh',
+      label: `Quay vòng: ${ROTATION_CHOICES[step][1]}`,
+      sub: 'Bấm để đổi cách URL này chọn model',
+      run: () => setUrlRotation(provider, ROTATION_CHOICES[(step + 1) % ROTATION_CHOICES.length][0]),
+    },
+    {
+      icon: allLocked ? 'unlock' : 'lock',
+      label: allLocked ? 'Mở khoá model ở URL này' : 'Khoá model ở URL này',
+      sub: `${modelsHere.length} model 0đ · ${lockedHere.length} đang bị khoá`,
+      warn: !allLocked,
+      run: () => setAllLocked(SCOPE.MODEL, modelsHere.map((m) => m.id), !allLocked),
+    },
+    {
+      icon: 'trash',
+      label: 'Xoá cấu hình riêng',
+      sub: 'Bỏ khoá và thứ tự riêng, quay về cấu hình chung',
+      run: () => clearUrlSettings(provider),
+    },
+  ];
+
+  if (provider.websiteURL) {
+    actions.push(
+      { icon: 'globe', label: 'Mở website', sub: provider.websiteURL, run: () => {
+        try { window.open(provider.websiteURL, '_blank', 'noopener,noreferrer'); }
+        catch { copyText(provider.websiteURL, 'Không mở được, đã chép website'); }
+      } },
+      { icon: 'copy', label: 'Chép website', sub: provider.websiteURL, run: () => copyText(provider.websiteURL, 'Đã chép website') },
+    );
+  }
+  actions.push(
     { icon: 'copy', label: 'Chép base URL', sub: provider.baseURL, run: () => copyText(provider.baseURL, 'Đã chép URL') },
-  ]);
+  );
+  return sheet(provider.name, `${provider.baseURL}${api ? ` · ${api} API` : ''}`, actions);
+}
+
+/** Set this URL's rotation rule and repaint everything that reads it. */
+async function setUrlRotation(provider, value) {
+  await priority.setProviderPriority(provider.id, { rotation: value });
+  toast('Đã lưu cách quay vòng cho URL này');
+  await refreshPriority();
+}
+
+/** Drop this URL's overrides and go back to the shared settings. */
+async function clearUrlSettings(provider) {
+  await priority.setProviderPriority(provider.id, {
+    rotation: null,
+    skipped: null,
+    order: null,
+  });
+  // Row-level model locks are dropped too, otherwise "clear this URL's settings"
+  // would leave the list still filtered by rows the user can no longer see.
+  for (const model of modelIdsByProvider.get(provider.id) ?? []) {
+    await priority.setSkipped(SCOPE.MODEL, model.id, false);
+  }
+  toast('Đã xoá cấu hình riêng của URL này');
+  await refreshPriority();
 }
 
 /** Everything that can be done to one model, as a list. */
@@ -532,6 +751,11 @@ function modelActions(provider, model) {
   const urlLock = skippedFor(SCOPE.PROVIDER).has(provider.id);
   const actions = [
     { icon: 'info', label: 'Xem thông tin & chép', sub: 'URL, model id, mọi API của URL này', run: () => openModelDialog(provider, model) },
+    // Named here too, not only on the sheet, because the sheet is two taps away
+    // and this is the action someone reaches for when a model suddenly stops
+    // answering.
+    { icon: 'wrench', label: 'Thử model thủ công', sub: 'Gửi request thật tới đúng model này', run: () => openTestDialog(provider, model) },
+    { icon: 'scan', label: 'Quét nhiều model của URL', sub: 'Dùng 1 key thử hàng loạt model 0đ', run: () => openBulkDialog(provider) },
   ];
 
   if (ownLock || urlLock) {
@@ -768,232 +992,234 @@ async function render() {
   // drive every sort on this screen.
   await loadMetrics(modelRows);
 
-  // A URL that was open may have been deleted; fall back rather than render
-  // an empty list with no way back.
-  if (openProviderId && !providerRows.some((p) => p.id === openProviderId)) {
-    openProviderId = null;
+  // A URL the drawer jumped to may have been deleted; drop the mark rather than
+  // try to scroll to a block that is no longer drawn.
+  if (focusProviderId && !providerRows.some((p) => p.id === focusProviderId)) {
+    focusProviderId = null;
   }
 
   await renderSidebar(providerRows, modelRows, keyRows);
 
-  const provider = openProviderId ? providerRows.find((p) => p.id === openProviderId) : null;
-  $('treeTitle').textContent = provider ? provider.name : 'Chọn URL ở menu';
-
   const root = $('treeRoot');
   root.replaceChildren();
+  $('treeTitle').textContent = 'Tất cả model 0đ';
 
-  if (!provider) {
-    root.append(emptyNote('Bấm nút ☰ để chọn một URL. Mỗi URL là một mục riêng.'));
-    await renderKeys(providerRows);
-    await renderHealth(mappingRows, keyRows, modelRows);
-    return;
+  // Models and keys are bucketed once per render and every block below reads the
+  // same buckets, so one URL's rows and its counts cannot disagree.
+  const keysByProvider = new Map();
+  for (const key of keyRows) {
+    if (!keysByProvider.has(key.providerId)) keysByProvider.set(key.providerId, []);
+    keysByProvider.get(key.providerId).push(key);
   }
 
-  const match = FILTERS[activeFilter];
-  // Free only, at every filter level: `all` is not a licence to show paid.
-  const freeHere = modelRows.filter((m) => m.providerId === provider.id && m.active !== false && isFree(m));
-  let visible = freeHere.filter((m) => match(m));
+  // Every free model of every URL, once. `listable` is what keeps a priced model
+  // out of all three chips at every filter level; the chip only narrows further.
+  const listable = modelRows.filter((m) => m.active !== false && m.freeStatus !== FREE.PAID);
 
-  if (searchTerm) {
-    const needle = searchTerm.toLowerCase();
-    visible = visible.filter(
-      (m) =>
-        m.modelId.toLowerCase().includes(needle) ||
-        String(m.displayName ?? '').toLowerCase().includes(needle)
-    );
+  // Kept for the URL menu, which has to name every model of one URL to lock them
+  // all and cannot read storage while it is building a sheet.
+  modelIdsByProvider = new Map();
+  for (const model of listable) {
+    if (!modelIdsByProvider.has(model.providerId)) modelIdsByProvider.set(model.providerId, []);
+    modelIdsByProvider.get(model.providerId).push(model);
   }
-
-  // The denominator is the free set, so the count never implies paid models
-  // are one tap away.
-  const allHere = freeHere;
-  const narrowed = activeFilter !== 'all' || searchTerm;
-  $('filterCount').textContent = narrowed
-    ? `${visible.length} / ${allHere.length} model 0đ`
-    : `${visible.length} model 0đ`;
 
   // Each chip carries its own size. A chip that reads "chắc 0đ" but is empty is
   // indistinguishable from one holding two models, so a user has to press it to
   // find out - and a dead chip looks broken rather than merely empty. Counting
   // here rather than in the handler is what keeps the chips and the list in
-  // agreement: they are both derived from the same `freeHere`.
+  // agreement: they are both derived from the same `listable`.
   for (const chip of document.querySelectorAll('.chip')) {
     const slot = chip.querySelector('.chip-count');
     if (!slot) continue;
-    const n = allHere.filter((m) => FILTERS[chip.dataset.filter](m)).length;
+    // Guarded, like `filterBy` above. A chip name the app no longer recognises
+    // - a stale bookmark, a cached shell serving older markup - reached this as
+    // an undefined function and took the whole render down with it, so the model
+    // list the user asked for was never drawn at all.
+    const countFor = FILTERS[chip.dataset.filter];
+    if (!countFor) continue;
+    const n = listable.filter((m) => countFor(m)).length;
     slot.textContent = n ? String(n) : '';
   }
 
-  if (!visible.length) {
-    root.append(
-      emptyNote(
-        allHere.length
-          ? 'Không có model nào khớp bộ lọc này.'
-          : 'URL này chưa có model 0đ. Bấm quét lại hoặc thêm model thủ công.'
-      )
-    );
-  } else {
-    // The user's pin and order decide first; the free-status rank is only the
-    // tie-break, so an untouched list still leads with the verified free models.
-    const rank = {
-      [FREE.FREE_VERIFIED]: 0,
-      [FREE.FREE_LIKELY]: 1,
-      [FREE.FREE_UNKNOWN]: 2,
-      [FREE.PAID]: 3,
-    };
-    const mine = effectiveFor(provider);
-    visible = applyPriority(
-      visible,
+  const matcher = FILTERS[activeFilter] ?? FILTERS.free;
+  const needle = searchTerm.trim().toLowerCase();
+  // The user's pin and order decide first; the free-status rank is only the
+  // tie-break, so an untouched list still leads with the verified free models.
+  const rank = {
+    [FREE.FREE_VERIFIED]: 0,
+    [FREE.FREE_LIKELY]: 1,
+    [FREE.FREE_UNKNOWN]: 2,
+    [FREE.PAID]: 3,
+  };
+
+  let shown = 0;
+  let shownUrls = 0;
+
+  for (const provider of sortUrls(providerRows)) {
+    // A search that names the URL brings back all of its models. With every URL
+    // on one screen, "openrouter" is a thing worth typing into the search box,
+    // and answering "no models match" would be the wrong answer.
+    const urlMatches =
+      !needle ||
+      provider.name.toLowerCase().includes(needle) ||
+      String(provider.baseURL ?? '').toLowerCase().includes(needle);
+
+    const mine = [];
+    for (const model of modelIdsByProvider.get(provider.id) ?? []) {
+      if (!matcher(model)) continue;
+      if (
+        urlMatches ||
+        model.modelId.toLowerCase().includes(needle) ||
+        String(model.displayName ?? '').toLowerCase().includes(needle)
+      ) {
+        mine.push(model);
+      }
+    }
+    if (!mine.length) continue;
+
+    // Ordered per URL, because the same model id can exist on several URLs and
+    // each one may have been arranged differently.
+    const rules = effectiveFor(provider);
+    const ordered = applyPriority(
+      mine,
       SCOPE.MODEL,
       (a, b) =>
         (rank[a.freeStatus] ?? 4) - (rank[b.freeStatus] ?? 4) ||
         a.modelId.localeCompare(b.modelId),
-      { order: mine.order, rotation: mine.rotation }
+      { order: rules.order, rotation: rules.rotation }
     );
 
-    // Every free model is rendered. There is no "show more": a limit here
-    // would silently hide models the user already scanned for, and the count
-    // above would stop matching the list.
-    const group = document.createElement('div');
-    group.className = 'group';
-    for (const model of visible) group.append(modelRow(provider, model));
-    // The dragged order is written to this URL, not to the global list: the same
-    // model id can exist on several URLs, and each one may be ordered differently.
-    makeSortable(group, visible, SCOPE.MODEL, (m) => m.id, { providerId: provider.id });
-    root.append(group);
+    // Every free model is rendered. There is no "show more": a limit here would
+    // silently hide models the user already scanned for, and the count above
+    // would stop matching the list.
+    root.append(urlSection(provider, ordered, keysByProvider.get(provider.id) ?? []));
+    shown += ordered.length;
+    shownUrls += 1;
   }
 
-  // The URL's own rotation settings sit above its models, because they decide
-  // the order of the list directly below them.
-  root.append(priorityPanel(provider, visible));
+  // The hidden set is named rather than silent. A list that quietly drops models
+  // a scan just found reads as a broken scan; a count says the models are here
+  // and one tap away behind their own chip.
+  const hiddenUnknown =
+    activeFilter === 'unknown' ? 0 : listable.filter((m) => isUnknownPrice(m)).length;
+  $('filterCount').textContent =
+    `${shown} ${FILTER_LABEL[activeFilter] ?? FILTER_LABEL.free} · ${shownUrls} URL` +
+    (hiddenUnknown ? ` · ${hiddenUnknown} chưa rõ giá ẩn` : '');
 
-  // Per-URL actions live under that URL's own model list.
-  const actions = document.createElement('div');
-  actions.className = 'actions';
-  const scanBtn = document.createElement('button');
-  scanBtn.className = 'small';
-  scanBtn.textContent = 'quét lại URL này';
-  scanBtn.addEventListener('click', () => scanOne(provider));
-  const addBtn = document.createElement('button');
-  addBtn.className = 'small';
-  addBtn.textContent = '+ thêm model';
-  addBtn.addEventListener('click', () => openManualModel(provider));
-  actions.append(scanBtn, addBtn);
-  actions.append(lockAllButton(SCOPE.MODEL, visible.map((m) => m.id)));
-  root.append(actions);
+  if (!shown) {
+    root.append(
+      emptyNote(
+        searchTerm
+          ? 'Không có model nào khớp. Xoá ô tìm kiếm để xem lại.'
+          : 'Chưa có model 0đ nào. Bấm QUÉT TẤT CẢ URL để lấy danh sách model.'
+      )
+    );
+  }
 
   await renderKeys(providerRows);
   await renderHealth(mappingRows, keyRows, modelRows);
 }
 
 /**
- * The rotation settings for one URL.
+ * One URL and its 0đ models, as one block of the flat list.
  *
- * Placed above that URL's model list because it is what orders it. Three things
- * are editable, and each one has a single answer to the question "why is this
- * list in this order":
- *
- *   rule     - fastest first, or only what I dragged, or spread the load
- *   overrides- which models this URL skips, regardless of the global list
- *   summary  - how many are locked out, so an empty list is explainable
- *
- * The settings are stored on the provider row and fall back to the global ones,
- * so a URL that is never touched keeps following the global rule.
+ * The header is sticky because it is the only place the URL is written on this
+ * screen: it answers "which URL am I looking at" while the eye is on a model id
+ * somewhere down a long list. It is also the copy target for the URL, and the ⋮
+ * beside it is where everything about this URL is configured - so the three
+ * things this screen is for (URL, model, API) are each one tap from the screen
+ * the user is already on.
  */
-function priorityPanel(provider, visibleModels) {
-  const box = document.createElement('div');
-  box.className = 'prio';
+function urlSection(provider, models, keys) {
+  const box = document.createElement('section');
+  box.className = 'urlblock';
+  box.dataset.providerId = provider.id;
+  if (provider.id === focusProviderId) box.classList.add('on');
+  if (skippedFor(SCOPE.PROVIDER).has(provider.id)) box.classList.add('locked');
 
-  const local = provider.priority ?? {};
-  const current = local.rotation ?? priorityState?.rotation ?? ROTATION.SPEED;
-
-  // ---- the rule ----------------------------------------------------------
+  // ---- the sticky header: the URL itself, and a tap to copy it ----
   const head = document.createElement('div');
-  head.className = 'prio-head';
+  head.className = 'urlhead';
 
-  const title = document.createElement('span');
-  title.className = 'prio-title';
-  title.textContent = 'Khi quay vòng, dùng URL này:';
+  const copy = document.createElement('button');
+  copy.className = 'urlcopy';
+  copy.title = `Chép URL: ${provider.baseURL}`;
+  copy.setAttribute?.('aria-label', `Chép URL ${provider.baseURL}`);
 
-  const select = document.createElement('select');
-  select.className = 'prio-select';
-  for (const [value, label] of [
-    [ROTATION.SPEED, 'model nhanh nhất trước'],
-    [ROTATION.MANUAL, 'đúng thứ tự tôi kéo'],
-    [ROTATION.ROUND_ROBIN, 'chia đều lượt dùng'],
-  ]) {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = label;
-    if (value === current) option.selected = true;
-    select.append(option);
-  }
-  select.addEventListener('change', async () => {
-    await priority.setProviderPriority(provider.id, { rotation: select.value });
-    toast('Đã lưu cách quay vòng cho URL này');
-    await refreshPriority();
+  const name = document.createElement('span');
+  name.className = 'uname';
+  name.textContent = provider.name;
+
+  const base = document.createElement('span');
+  base.className = 'ubase';
+  base.textContent = provider.baseURL;
+
+  const meta = document.createElement('span');
+  meta.className = 'umeta';
+  meta.textContent = `${models.length} model 0đ · ${keys.length} API`;
+
+  copy.append(name, base, meta);
+  copy.addEventListener('click', () => copyText(provider.baseURL, 'Đã chép URL'));
+
+  const menu = iconButton('dots', `Thao tác với URL ${provider.name}`, () => {
+    const parts = unpackSheet(urlActions(provider));
+    openRowMenu(parts.title, parts.sub, parts.actions);
   });
 
-  head.append(title, select);
+  head.append(copy, menu, lockButton('provider', provider.id));
   box.append(head);
 
-  // ---- what is locked out on this URL ------------------------------------
-  const lockedHere = visibleModels.filter((m) => skippedFor(SCOPE.MODEL).has(m.id));
-  const lockedUrls = skippedFor(SCOPE.PROVIDER).has(provider.id);
-
-  const summary = document.createElement('div');
-  summary.className = 'prio-sum';
-  if (lockedUrls) {
-    summary.textContent = 'URL này đang khoá, nên không model nào chạy.';
-  } else if (lockedHere.length) {
-    summary.textContent = `${lockedHere.length} model bị khoá ở URL này: ` +
-      lockedHere.slice(0, 4).map((m) => m.modelId).join(', ') +
-      (lockedHere.length > 4 ? `, +${lockedHere.length - 4} nữa` : '');
-  } else {
-    summary.textContent = 'Không khoá model nào ở URL này.';
-  }
-  box.append(summary);
-
-  // ---- per-URL overrides, written as model ids ---------------------------
-  // Stored by model id rather than row id so the list survives a rescan that
-  // recreates rows: a lock must not silently drop because a row was replaced.
-  const actions = document.createElement('div');
-  actions.className = 'prio-actions';
-
-  const lockAll = document.createElement('button');
-  lockAll.className = 'mini';
-  const allLocked = visibleModels.length > 0 && lockedHere.length === visibleModels.length;
-  lockAll.textContent = allLocked ? 'mở khoá model ở URL này' : 'khoá model ở URL này';
-  lockAll.addEventListener('click', async () => {
-    for (const model of visibleModels) {
-      await priority.setSkipped(SCOPE.MODEL, model.id, !allLocked);
-    }
-    await refreshPriority();
-  });
-
-  const clearAll = document.createElement('button');
-  clearAll.className = 'mini';
-  clearAll.textContent = 'xoá cấu hình riêng';
-  clearAll.title = 'Xoá khoá và thứ tự riêng của URL này, quay về cấu hình chung';
-  clearAll.addEventListener('click', async () => {
-    await priority.setProviderPriority(provider.id, {
-      rotation: null,
-      skipped: null,
-      order: null,
-    });
-    // Row-level locks written from this URL's panel are also dropped, otherwise
-    // "clear this URL's settings" would leave the list still filtered.
-    for (const model of visibleModels) await priority.setSkipped(SCOPE.MODEL, model.id, false);
-    toast('Đã xoá cấu hình riêng của URL này');
-    await refreshPriority();
-  });
-
-  actions.append(lockAll, clearAll);
-  box.append(actions);
+  // ---- the models ----
+  const group = document.createElement('div');
+  group.className = 'group';
+  for (const model of models) group.append(modelRow(provider, model, keys));
+  // The dragged order is written to this URL, and the container is this URL's own
+  // group, so a row can never be dropped into another URL's list.
+  makeSortable(group, models, SCOPE.MODEL, (m) => m.id, { providerId: provider.id });
+  box.append(group);
 
   return box;
 }
 
-function modelRow(provider, model) {
+/**
+ * One API key of this URL, on a model row, as a copy target.
+ *
+ * A key belongs to the URL, not to a model, so the same chip sits beside every
+ * model of that URL - which is exactly the truth the row is telling: any of these
+ * keys works with any of these models. The masked form is what is on screen;
+ * tapping reveals and copies in one gesture, through the one function allowed to
+ * put a secret on the screen.
+ */
+function apiChip(provider, key) {
+  const chip = document.createElement('button');
+  chip.className = 'apichip';
+
+  const shown = revealedKeys.has(key.id);
+  chip.title = shown ? 'Bấm để chép lại API này' : 'Bấm để hiện và chép API này';
+  chip.setAttribute?.('aria-label', `${shown ? 'API' : 'API đang che'} ${key.masked ?? ''}`);
+
+  const dot = document.createElement('span');
+  dot.className = 'kdot ' + key.status;
+
+  const text = document.createElement('span');
+  text.className = 'apiname';
+  if (shown) {
+    // revealedText is the audited sink for a full secret; nothing else here is
+    // allowed to put one on the screen.
+    text.textContent = revealedText(key);
+  } else {
+    // Computed first, so no assignment to textContent ever holds the raw secret.
+    const maskedText = key.masked ?? maskSecret(key.secret);
+    text.textContent = maskedText;
+  }
+
+  chip.append(dot, text);
+  chip.addEventListener('click', () => revealKey(provider, key));
+  return chip;
+}
+
+function modelRow(provider, model, keys = []) {
   const row = document.createElement('div');
   row.className = 'model';
   row.dataset.modelId = model.modelId;
@@ -1005,16 +1231,20 @@ function modelRow(provider, model) {
 
   // A locked row stays visible and editable. It is only left out of the
   // rotation, so hiding it would make it look deleted.
-  // Inherited from the open URL, or locked on its own. Both look locked; only
-  // the second one is a lock the user can undo from this row alone.
+  // Inherited from its URL, or locked on its own. Both look locked; only the
+  // second one is a lock the user can undo from this row alone.
   const ownLock = skippedFor(SCOPE.MODEL).has(model.id);
   const urlLock = skippedFor(SCOPE.PROVIDER).has(provider.id);
   if (ownLock || urlLock) row.classList.add('locked');
 
-  // Tapping the name opens the model; the lock must not also trigger that.
+  // Tapping the model copies its id, which is the thing this screen exists to
+  // hand over: the id is what gets pasted into a client. The full card - price
+  // evidence, capabilities, measured speed - stays one tap away on the ⓘ beside
+  // it, so nothing is lost by making the row itself the copy target.
   const openBtn = document.createElement('button');
   openBtn.className = 'modelopen';
-  openBtn.setAttribute?.('aria-label', `Mở thông tin model ${model.modelId}`);
+  openBtn.title = `Chép model id: ${model.modelId}`;
+  openBtn.setAttribute?.('aria-label', `Chép model id ${model.modelId}`);
 
   const dot = document.createElement('span');
   dot.className = 'free';
@@ -1088,8 +1318,9 @@ function modelRow(provider, model) {
     speed.title = 'Chạy check API để đo tốc độ của model này';
   }
 
-  const chev = icon('info');
-  chev.classList.add('chev');
+  // The copy glyph, so the row says what a tap does before it is tapped.
+  const tapIcon = icon('copy');
+  tapIcon.classList.add('taphint');
 
   // Name and facts travel together in the middle column, so the speed figure on
   // the right stays aligned across rows regardless of how many chips a model
@@ -1098,12 +1329,27 @@ function modelRow(provider, model) {
   mid.className = 'mid';
   mid.append(name, facts);
 
-  openBtn.append(dot, mid, speed, chev);
-  openBtn.addEventListener('click', () => openModelDialog(provider, model));
+  openBtn.append(dot, mid, speed, tapIcon);
+  openBtn.addEventListener('click', () => copyText(model.modelId, 'Đã chép model'));
 
   row.dataset.sortId = model.id;
   attachRowMenu(row, () => modelSheet(provider, model));
-  row.append(openBtn, lockButton('model', model.id, { inherited: urlLock && !ownLock }));
+  row.append(openBtn);
+
+  // The URL's API keys, on a second line of the same row. They sit here rather
+  // than only inside the model card because the three things this screen is for -
+  // URL, model, API - are then visible at once, and each is one tap to copy.
+  if (keys.length) {
+    const apis = document.createElement('div');
+    apis.className = 'apichips';
+    for (const key of keys) apis.append(apiChip(provider, key));
+    row.append(apis);
+  }
+
+  row.append(
+    iconButton('info', `Xem thông tin ${model.modelId}`, () => openModelDialog(provider, model)),
+    lockButton('model', model.id, { inherited: urlLock && !ownLock })
+  );
   return row;
 }
 
@@ -1217,6 +1463,348 @@ async function openModelDialog(provider, model) {
   // never opens at all and the tap looks broken rather than empty.
   openSheet('modelDialog');
   await renderKeyRows(provider);
+}
+
+// --------------------------------------------- manual model test
+
+/**
+ * Test one model, one key, one prompt.
+ *
+ * This is deliberately not the verifier. The verifier asks "is this key alive on
+ * this URL" and answers by trying models in order until one works, which is the
+ * right question for a key and the wrong one for a model: a key that is healthy
+ * on the URL's first model can still be dead on the model the user is looking
+ * at. Only a request that names all three - this key, this model, this URL - can
+ * tell you which.
+ *
+ * Nothing is written to storage. A manual test is a question, not a verdict:
+ * overwriting a key's status from a single hand-typed prompt would make the
+ * health list claim something the app does not actually know.
+ */
+
+/** The prompt used when the box is left empty. One word, eight tokens. */
+const TEST_DEFAULT_PROMPT = 'Trả lời bằng một từ';
+const TEST_MAX_TOKENS = 8;
+
+async function openTestDialog(provider, model) {
+  // Recorded before anything is drawn: the sheet names one model, and the run
+  // has to send its request to the same one however the sheet was reached.
+  testTarget = { providerId: provider.id, modelId: model.modelId };
+  $('testUrl').textContent = provider.baseURL;
+  $('testModel').textContent = model.modelId;
+  $('testHint').textContent = `${provider.name} · ${model.modelId}`;
+  setTestResult('Chưa chạy. Bấm ▶ CHẠY THỬ để gửi một request thật.', 'idle');
+
+  const list = await keys.list(provider.id);
+  const picker = $('testKey');
+  picker.replaceChildren();
+
+  if (!list.length) {
+    // No key means no request can be made, and the reason has to be on the
+    // screen before the run rather than after it.
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'URL này chưa có API key';
+    picker.append(none);
+    $('testRun').disabled = true;
+  } else {
+    for (const key of list) {
+      const opt = document.createElement('option');
+      opt.value = key.id;
+      // The status travels with the name: picking between two masked keys that
+      // look alike is otherwise guesswork.
+      opt.textContent = `${key.masked} · ${STATUS_META[key.status]?.label ?? key.status}`;
+      picker.append(opt);
+    }
+    $('testRun').disabled = false;
+  }
+
+  openSheet('testDialog');
+}
+
+/** Write the result box, with the state named in words as well as colour. */
+function setTestResult(text, state) {
+  const box = $('testResult');
+  box.textContent = text;
+  box.className = 'testresult testresult-' + state;
+}
+
+/** Turn one probe result into the four lines a person needs to judge it. */
+function describeTestResult(result) {
+  if (result.ok) {
+    const m = result.metrics ?? {};
+    const rows = [`Khỏe · HTTP ${result.httpStatus ?? 200}`, ''];
+    // Timings are the whole point of running a test by hand, so they are shown
+    // even when they are missing - as "không đo được" rather than as a blank,
+    // because a blank reads as "fast" next to a number that reads as "slow".
+    rows.push(`câu trả lời: ${result.content ? JSON.stringify(result.content) : '(rỗng)'}`);
+    rows.push(`tổng thời gian: ${Number.isFinite(m.totalMs) ? `${m.totalMs}ms` : 'không đo được'}`);
+    rows.push(`token đầu tiên: ${Number.isFinite(m.ttftMs) ? `${m.ttftMs}ms` : 'không đo được'}`);
+    rows.push(`tốc độ: ${Number.isFinite(m.tokensPerSec) ? `${m.tokensPerSec} tok/s` : 'không đo được'}`);
+    if (Number.isFinite(m.totalTokens)) rows.push(`token dùng: ${m.totalTokens}`);
+    return { text: rows.join('\n'), state: 'ok' };
+  }
+
+  const label = STATUS_META[result.status]?.label ?? result.status ?? 'lỗi';
+  const rows = [`Lỗi · ${label}`, ''];
+  if (result.httpStatus) rows.push(`HTTP: ${result.httpStatus}`);
+  rows.push(`thời gian chờ: ${Number.isFinite(result.latencyMs) ? `${result.latencyMs}ms` : 'không rõ'}`);
+  rows.push(`chi tiết: ${result.error ?? 'không có'}`);
+  // The two most common causes are worth naming, because the fix is different:
+  // a bad key is fixed by pasting another one, a bad model by choosing another.
+  if (result.status === STATUS.AUTH_INVALID || result.status === STATUS.EXPIRED) {
+    rows.push('', '→ Thử một API key khác của URL này.');
+  } else if (result.status === STATUS.MODEL_UNAVAILABLE || result.status === STATUS.MODEL_DENIED) {
+    rows.push('', '→ Model này không dùng được với key đó. Thử model khác.');
+  }
+  return { text: rows.join('\n'), state: 'bad' };
+}
+
+async function runManualTest() {
+  // The sheet's own target, never `currentModel`: this sheet is opened from a
+  // model's action sheet as well as from its card, and only the card sets
+  // `currentModel` - so reading it here would run the wrong model, or nothing.
+  const target = testTarget;
+  if (!target) return;
+  const keyId = $('testKey').value;
+  if (!keyId) {
+    setTestResult('Chưa có API key nào trên URL này để gửi request.', 'bad');
+    return;
+  }
+
+  const provider = await providers.get(target.providerId);
+  const key = await storage.get('keys', keyId);
+  if (!provider || !key) {
+    setTestResult('Không tìm thấy URL hoặc API key.', 'bad');
+    return;
+  }
+
+  const message = $('testPrompt').value.trim() || TEST_DEFAULT_PROMPT;
+  const adapter = providers.adapterFor(provider);
+
+  $('testRun').disabled = true;
+  setTestResult('Đang gửi…', 'run');
+  const startedAt = Date.now();
+  try {
+    const result = await adapter.probeWithMetrics({
+      model: target.modelId,
+      secret: key.secret,
+      maxTokens: TEST_MAX_TOKENS,
+    });
+    const described = describeTestResult(result);
+    // A real stopwatch as well as the server's own timings: when they disagree
+    // the gap is usually the provider queueing, which neither number shows.
+    setTestResult(`tổng thời gian đo tay: ${Date.now() - startedAt}ms\n${described.text}`, described.state);
+    log(`thử tay ${provider.name}/${target.modelId} bằng ${key.masked}: ${described.state === 'ok' ? 'khỏe' : 'lỗi'}`);
+  } catch (error) {
+    setTestResult(`Lỗi không mong đợi\n${error?.message ?? error}`, 'bad');
+  } finally {
+    $('testRun').disabled = false;
+  }
+}
+
+// --------------------------------------------- bulk probe
+
+/**
+ * One key across many models of one URL.
+ *
+ * The verifier stops at the first model that answers, because it is asking
+ * about a key. This asks which models are alive, which no single request can
+ * answer - so it spends one request per model, and pays for it in care: a
+ * number the user chooses, an estimate shown before the run, a stop button, and
+ * a self-interrupt once the failures stop looking like the model's fault.
+ */
+
+/** Set once the run is confirmed, so a re-render does not ask again. */
+let bulkConfirmed = false;
+
+async function openBulkDialog(provider) {
+  const cfg = CONFIG.bulkProbe;
+  bulkConfirmed = false;
+  // The sheet shows one URL's key list, so the run has to know which URL that
+  // was. `currentModel` belongs to whatever card was opened last, if any.
+  bulkProviderId = provider.id;
+
+  $('bulkUrl').textContent = provider.baseURL;
+  $('bulkHint').textContent =
+    `${provider.name} · một API key, nhiều model. Mỗi model một request.`;
+  $('bulkCap').textContent = `tối đa ${cfg.maxLimit}`;
+  $('bulkLimit').value = String(cfg.defaultLimit);
+  $('bulkProgress').textContent = '';
+  $('bulkStop').hidden = true;
+
+  const list = await keys.list(provider.id);
+  fillKeyPicker($('bulkKey'), list);
+
+  if (!list.length) {
+    // "No keys" and "keys not loaded" must not look the same to someone
+    // deciding whether to add one or wait.
+    $('bulkRows').replaceChildren(bulkEmptyNote('URL này chưa có API key.'));
+    $('bulkRun').disabled = true;
+  } else {
+    $('bulkRun').disabled = false;
+    $('bulkRows').replaceChildren(bulkEmptyNote('Chọn số model rồi bấm BẮT ĐẦU QUÉT.'));
+  }
+
+  updateBulkEstimate();
+  openSheet('bulkDialog');
+}
+
+/** One picker, filled the same way in both test sheets. */
+function fillKeyPicker(picker, list) {
+  picker.replaceChildren();
+  for (const key of list) {
+    const opt = document.createElement('option');
+    opt.value = key.id;
+    // The status travels with the name: picking between two masked keys that
+    // look alike is otherwise guesswork.
+    opt.textContent = `${key.masked} · ${STATUS_META[key.status]?.label ?? key.status}`;
+    picker.append(opt);
+  }
+}
+
+function bulkEmptyNote(text) {
+  const div = document.createElement('div');
+  div.className = 'bulk-empty';
+  div.textContent = text;
+  return div;
+}
+
+/**
+ * Read the requested number, bounded.
+ *
+ * An empty or nonsensical box falls back to the default rather than clamping to
+ * 1: a user who cleared the field has not asked for a single model, and
+ * silently starting a one-model run would be a different action than the one
+ * they seem to be reaching for.
+ */
+function bulkLimitFromInput() {
+  const cfg = CONFIG.bulkProbe;
+  const raw = Number($('bulkLimit').value);
+  if (!Number.isFinite(raw) || raw < 1) return cfg.defaultLimit;
+  return Math.min(Math.floor(raw), cfg.maxLimit);
+}
+
+/** Say what the run will cost before it does it. */
+function updateBulkEstimate() {
+  const cfg = CONFIG.bulkProbe;
+  const n = bulkLimitFromInput();
+  const tokens = n * cfg.maxTokens;
+  const box = $('bulkEstimate');
+
+  box.textContent = [
+    `${n} request`,
+    `khoảng ${tokens.toLocaleString('vi-VN')} token output`,
+    'model có phí không được chạy',
+  ].join(' · ');
+
+  // Past this the user is spending a real quota, and that should be said in a
+  // different colour rather than left to be inferred from the number.
+  box.className = n > 50 ? 'bulk-estimate warn' : 'bulk-estimate';
+}
+
+/** Paint one finished model. */
+function bulkResultRow(entry) {
+  const cfg = CONFIG.bulkProbe;
+  const row = document.createElement('div');
+  const hard = [STATUS.AUTH_INVALID, STATUS.EXPIRED, STATUS.QUOTA_EXHAUSTED].includes(entry.status);
+  row.className = 'bulk-row ' + (entry.ok ? 'ok' : hard ? 'hard' : 'bad');
+
+  const dot = document.createElement('span');
+  dot.className = 'kdot ' + (entry.ok ? 'HEALTHY' : entry.status);
+
+  const name = document.createElement('span');
+  name.className = 'bulk-name';
+  name.textContent = entry.modelId;
+
+  const verdict = document.createElement('span');
+  verdict.className = 'bulk-verdict';
+  verdict.textContent = entry.ok ? 'khỏe' : (STATUS_META[entry.status]?.label ?? entry.status);
+
+  const lat = document.createElement('span');
+  lat.className = 'bulk-lat';
+  lat.textContent = entry.ok && Number.isFinite(entry.ttftMs) ? `${entry.ttftMs}ms` : '';
+
+  row.append(dot, name, verdict, lat);
+  return row;
+}
+
+async function runBulkProbe() {
+  const target = bulkProviderId ? await providers.get(bulkProviderId) : null;
+  if (!target) return;
+
+  const keyId = $('bulkKey').value;
+  if (!keyId) {
+    $('bulkRows').replaceChildren(bulkEmptyNote('Chưa có API key nào để quét.'));
+    return;
+  }
+
+  const cfg = CONFIG.bulkProbe;
+  const n = bulkLimitFromInput();
+
+  // A sheet is modal, so a second dialog on top of it would trap the user in a
+  // stack they cannot see the bottom of. confirm() is ugly and always works.
+  if (!bulkConfirmed) {
+    const ok = globalThis.confirm?.(
+      `Sẽ gửi ${n} request tới ${target.name}.
+` +
+      `Mỗi model 1 request, khoảng ${(n * cfg.maxTokens).toLocaleString('vi-VN')} token output.
+
+` +
+      `Bấm OK để bắt đầu.`
+    );
+    if (!ok) return;
+    bulkConfirmed = true;
+  }
+
+  $('bulkRun').disabled = true;
+  $('bulkStop').hidden = false;
+  currentRun = { cancelled: () => false, cancel: () => { currentRun.cancelled = () => true; } };
+
+  const box = $('bulkRows');
+  box.replaceChildren();
+
+  try {
+    const summary = await bulkProber.run({
+      providerId: target.id,
+      keyId,
+      limit: n,
+      run: currentRun,
+      onProgress: ({ entry, index, total }) => {
+        // One row at a time rather than a full render(): re-rendering the sheet
+        // two hundred times would drop the scroll position and fight the finger.
+        box.append(bulkResultRow(entry));
+        $('bulkProgress').textContent = `${index}/${total}`;
+      },
+    });
+
+    const lines = [
+      `quét ${target.name}: ${summary.healthy}/${summary.results.length} model khỏe · ${summary.requests} request`,
+    ];
+    if (summary.stopped) {
+      lines.push(
+        summary.stopReason === STOP.CANCELLED
+          ? 'đã dừng theo yêu cầu'
+          : summary.stopReason === STOP.QUOTA
+            ? 'dừng: hết quota'
+            : 'dừng: key có vấn đề, thử 5 model liên tiếp cùng lỗi'
+      );
+    }
+    log(lines.join(' · '));
+    toast(summary.healthy ? `${summary.healthy} model khỏe` : 'Không model nào chạy được');
+
+    if (!summary.results.length) {
+      box.replaceChildren(bulkEmptyNote('URL này không có model 0đ để quét.'));
+    }
+  } catch (error) {
+    log(`quét lỗi: ${error?.message ?? error}`);
+    toast('Lỗi khi quét');
+  } finally {
+    currentRun = null;
+    $('bulkRun').disabled = false;
+    $('bulkStop').hidden = true;
+    await refreshPriority();
+  }
 }
 
 async function renderKeyRows(provider) {
@@ -1335,10 +1923,15 @@ function revealedText(key) {
 }
 
 /** Reveal a full key and copy it. The only place a secret is shown. */
-function revealKey(provider, key) {
+async function revealKey(provider, key) {
   revealedKeys.add(key.id);
   copyText(key.secret, 'Đã chép key');
-  renderKeyRows(provider);
+  // Both surfaces that can show a key are repainted: the key list inside the
+  // model dialog, and the API chip on whichever model row was tapped. They are
+  // separate renders, so the one the user is not looking at would otherwise keep
+  // showing the masked form and the tap would look broken there.
+  await renderKeyRows(provider);
+  await render();
 }
 
 // ------------------------------------------------------- keys tab
@@ -1464,13 +2057,8 @@ async function scanEverything() {
       `xong: ${summary.providers} URL · +${summary.added} model · ` +
       `${summary.skipped} bỏ qua · ${summary.failed} lỗi`
     );
-    // Land on a URL that has something to show, so a first run is not a blank
-    // screen with a hint to go and pick something.
-    if (!openProviderId) {
-      const all = await models.list();
-      const first = all.find((m) => m.active !== false && m.freeStatus !== FREE.PAID);
-      if (first) openProviderId = first.providerId;
-    }
+    // Nothing to "land on": the main list holds every URL at once, so a first
+    // scan fills the screen the user is already looking at.
     toast(summary.added ? `+${summary.added} model` : 'Không có model mới');
   } catch (error) {
     log('lỗi quét: ' + (error?.message ?? error));
@@ -1616,6 +2204,9 @@ async function restoreDeletedKey() {
 function openAddUrlDialog() {
   $('urlName').value = '';
   $('urlBase').value = '';
+  $('urlWebsite').value = '';
+  $('urlModels').value = '';
+  $('urlKey').value = '';
   openSheet('addUrlDialog');
   $('urlBase').focus();
 }
@@ -1628,8 +2219,13 @@ async function confirmAddUrl() {
   }
 
   setBusy(true);
+  let provider = null;
   try {
-    const result = await providers.upsert({ name: $('urlName').value.trim(), baseURL });
+    const result = await providers.upsert({
+      name: $('urlName').value.trim(),
+      baseURL,
+      websiteURL: $('urlWebsite').value.trim(),
+    });
 
     if (result.reason === 'DUPLICATE') {
       toast('URL này đã có trong danh sách');
@@ -1637,23 +2233,54 @@ async function confirmAddUrl() {
       return;
     }
 
+    provider = result.provider;
+    const modelIds = parseManualModelList($('urlModels').value);
+    for (const modelId of modelIds) {
+      await models.addManual({ providerId: provider.id, modelId, freeStatus: FREE.FREE_UNKNOWN });
+    }
     $('addUrlDialog').close();
-    // A provider that cannot be discovered is still added; the scan result
-    // tells the user which case this was.
-    const scan = await scanner.scanProvider({ providerId: result.provider.id, force: true });
+
+    const scan = await scanner.scanProvider({ providerId: provider.id, force: true });
     if (scan.ok) {
-      log(`${result.provider.name}: +${scan.added} model`);
+      log(`${provider.name}: +${scan.added} model`);
       toast(`+${scan.added} model`);
     } else {
-      log(`${result.provider.name}: không có /models (${scan.reason})`);
+      log(`${provider.name}: không có /models (${scan.reason})`);
       toast('Đã thêm, nhưng không quét được model');
     }
-    openProviderId = result.provider.id;
+
+    const secret = $('urlKey').value.trim();
+    if (secret) {
+      const keyResult = await keys.add({ providerId: provider.id, secret });
+      if (keyResult.created) {
+        const verified = await verifier.verifyKey({ keyId: keyResult.key.id });
+        log(
+          `${keyResult.key.masked} + ${provider.name} · ` +
+          (verified.ok ? `khỏe qua ${verified.verifiedModelId}` : `lỗi: ${verified.reason ?? '?'}`)
+        );
+        toast(verified.ok ? 'URL đã thêm, key dùng được' : 'URL đã thêm, key lỗi');
+      } else {
+        toast(keyResult.reason === 'DUPLICATE' ? 'Key này đã có trên URL' : 'Không thêm được key');
+      }
+    }
+
+    focusProviderId = provider.id;
     await render();
-    openManualModel(result.provider);
+    scrollToProvider(provider.id);
+    const saved = await providers.get(provider.id);
+    if (saved) await renderKeyRows(saved);
   } finally {
     setBusy(false);
   }
+}
+
+function parseManualModelList(value) {
+  const seen = new Set();
+  for (const part of String(value ?? '').split(/[\n,]+/)) {
+    const modelId = part.trim();
+    if (modelId) seen.add(modelId);
+  }
+  return [...seen];
 }
 
 // ------------------------------------------------------- add model
@@ -1698,6 +2325,12 @@ $('btnAddUrl').addEventListener('click', () => {
   openDrawer(false);
   openAddUrlDialog();
 });
+// The same action from the header, so "add a URL" is reachable without opening
+// the drawer first.
+$('appbarAddUrl').addEventListener('click', () => {
+  openDrawer(false);
+  openAddUrlDialog();
+});
 $('btnScanAll').addEventListener('click', scanEverything);
 $('urlConfirm').addEventListener('click', confirmAddUrl);
 $('urlCancel').addEventListener('click', () => $('addUrlDialog').close());
@@ -1707,6 +2340,40 @@ $('btnAddKey').addEventListener('click', async () => {
   if (provider) openAddKeyDialog(provider);
 });
 $('btnCheckOne').addEventListener('click', checkAllKeysOfCurrentModel);
+$('btnTestModel').addEventListener('click', async () => {
+  if (!currentModel) return;
+  const provider = await providers.get(currentModel.providerId);
+  if (!provider) return;
+  // currentModel carries the provider's model id, not the registry's own, so it
+  // has to be looked up by pair. Passing it to get() would read a row that does
+  // not exist and the test button would do nothing at all.
+  const model = await models.find(provider.id, currentModel.modelId);
+  if (!model) return;
+  openTestDialog(provider, model);
+});
+$('testRun').addEventListener('click', runManualTest);
+$('btnBulk').addEventListener('click', async () => {
+  if (!currentModel) return;
+  const provider = await providers.get(currentModel.providerId);
+  if (provider) openBulkDialog(provider);
+});
+$('bulkRun').addEventListener('click', runBulkProbe);
+$('bulkLimit').addEventListener('input', updateBulkEstimate);
+$('bulkStop').addEventListener('click', () => currentRun?.cancel());
+// Closing mid-run would leave the sheet behind an orphaned request: the run
+// keeps spending tokens against nobody's screen. So closing stops it first.
+const closeBulk = () => {
+  if (currentRun) currentRun.cancel();
+  $('bulkDialog').close();
+};
+$('bulkDismiss').addEventListener('click', closeBulk);
+$('bulkClose').addEventListener('click', closeBulk);
+$('bulkDialog').addEventListener('cancel', (event) => {
+  if (!currentRun) return;
+  event.preventDefault();
+  closeBulk();
+});
+$('testClose').addEventListener('click', () => $('testDialog').close());
 $('modelClose').addEventListener('click', () => $('modelDialog').close());
 $('keyConfirm').addEventListener('click', confirmAddKey);
 $('keyCancel').addEventListener('click', () => $('keyDialog').close());
@@ -1717,33 +2384,66 @@ $('manualConfirm').addEventListener('click', confirmAddModel);
 $('manualCancel').addEventListener('click', () => $('modelAddDialog').close());
 $('btnCancel').addEventListener('click', () => currentRun?.cancel());
 
-// A button in the group footer and the one the wiring test looks for.
-$('btnAddModel').addEventListener('click', async () => {
-  // The open URL, because the button sits in that URL's header. Falling back to
-  // the first provider would file the model under a URL the user never chose.
-  const provider = openProviderId ? await providers.get(openProviderId) : null;
-  if (provider) openManualModel(provider);
-  else toast('Chọn một URL trước đã');
-});
-
-// Add a key to the URL that is currently open. It does not need a model to be
-// tapped first: a key belongs to the URL, and every model of that URL then shows
-// it. This is the same dialog the model dialog uses, so one key lands in one
-// place.
-$('btnAddKeyUrl').addEventListener('click', async () => {
-  const provider = openProviderId ? await providers.get(openProviderId) : null;
-  if (provider) openAddKeyDialog(provider);
-  else toast('Chọn một URL trước đã');
-});
+// There is no header button for "add a key" or "add a model" any more. Both act
+// on exactly one URL, and with every URL on one screen there is no single URL a
+// header button could mean. Both are in that URL's own ⋮ menu, one tap from its
+// header, and the key dialog is also reachable from any model's card.
 
 $('rowMenuCancel').addEventListener('click', () => $('rowMenu').close());
 
 // The drawer order. Kept in a variable rather than read from the select on
 // every render, because every render sorts the list and the select is only
 // where the value is edited.
-$('urlSort').addEventListener('change', async (event) => {
-  URL_SORT = URL_SORTS[event.target.value] ? event.target.value : 'manual';
+$('urlSort').addEventListener('change', (event) => setUrlSort(event.target.value));
+
+/**
+ * Set the drawer's order from anywhere.
+ *
+ * The select and the "0đ ↓" quick button are two ways to say one thing, so the
+ * value is written to the variable and back into the select on every change. A
+ * control that shows one order while the list is in another is worse than no
+ * control, because the user reads it as a bug in the sort.
+ */
+async function setUrlSort(value) {
+  URL_SORT = URL_SORTS[value] ? value : 'manual';
+  const select = $('urlSort');
+  if (select) select.value = URL_SORT;
+  markUrlControls();
   await renderSidebarOnly();
+}
+
+// ---- URL search and classification -------------------------------------
+//
+// Both narrow the drawer only. The main list is the answer to "what can I use
+// for nothing", and a URL filter that quietly punched holes in it would make
+// the count under the title disagree with the rows beneath it.
+
+$('urlSearch').addEventListener('input', async (event) => {
+  urlSearchTerm = event.target.value.trim();
+  await renderSidebarOnly();
+});
+
+$('urlSearchClear').addEventListener('click', async () => {
+  urlSearchTerm = '';
+  $('urlSearch').value = '';
+  await renderSidebarOnly();
+});
+
+// Pressing the class that is already on turns it off, back to every URL. There
+// are two classes and only one can be on, so without a toggle the second tap on
+// "cần key" would be a tap that does nothing.
+for (const btn of document.querySelectorAll('.classbtn')) {
+  btn.addEventListener('click', async () => {
+    const next = btn.dataset.urlclass;
+    urlClass = urlClass === next ? 'all' : next;
+    await renderSidebarOnly();
+  });
+}
+
+// "Số lượng model 0đ nhiều trước", as one button. It writes the same URL_SORT
+// the select does, so the drawer has one order, stated twice.
+$('urlSortFree').addEventListener('click', () => {
+  void setUrlSort(URL_SORT === 'models' ? 'manual' : 'models');
 });
 
 /** Re-render the drawer on its own, for a change that only affects the drawer. */
@@ -1829,23 +2529,6 @@ async function loadMetrics(modelRows) {
 function skippedFor(scope) {
   const state = priorityState ?? { skipped: {} };
   return new Set(state.skipped?.[scope] ?? []);
-}
-
-/**
- * Which levels are locked out for the row currently on screen.
- *
- * A lock is inherited: locking a URL blocks its models and keys without
- * writing anything onto them. So each level has to know whether the level above
- * is locked, otherwise a model under a locked URL would still be offered.
- */
-function lockContext() {
-  const state = priorityState ?? { skipped: {} };
-  const providerLocked = state.skipped?.[SCOPE.PROVIDER] ?? [];
-  return {
-    providerLocked: openProviderId ? providerLocked.includes(openProviderId) : false,
-    models: new Set(state.skipped?.[SCOPE.MODEL] ?? []),
-    keys: new Set(state.skipped?.[SCOPE.KEY] ?? []),
-  };
 }
 
 /**
@@ -1999,7 +2682,16 @@ function mountLockAll(slot, scope, ids) {
     current.scope === scope &&
     current.ids.length === ids.length &&
     current.ids.every((id, i) => id === ids[i]);
-  if (same) return slot;
+
+  if (same) {
+    // The same list, but the lock state under it may have just changed - locking
+    // every row is a change to the state, not to the list. Reusing the element
+    // without repainting it is what left the button reading "khoá tất cả" while
+    // everything was already locked, so the only thing it could still do was
+    // lock again and "mở khoá tất cả" could never be reached.
+    paintLockAll(slot.children?.[0], scope, ids);
+    return slot;
+  }
 
   slot.replaceChildren();
   if (ids.length) slot.append(lockAllButton(scope, ids));
@@ -2007,21 +2699,36 @@ function mountLockAll(slot, scope, ids) {
   return slot;
 }
 
-/** One button that locks everything, or unlocks everything if all are locked. */
+/**
+ * One button that locks everything, or unlocks everything if all are locked.
+ *
+ * Both the label and the action are read from the current state on every tap
+ * rather than captured once, because this one element is reused across renders:
+ * a value closed over here would go stale the first time the list was locked,
+ * and every later tap would lock it again instead of unlocking it.
+ */
 function lockAllButton(scope, ids) {
-  const skipped = skippedFor(scope);
-  const allLocked = ids.length > 0 && ids.every((id) => skipped.has(id));
-
   const btn = document.createElement('button');
   btn.className = 'mini lockall';
+  btn.addEventListener('click', async () => {
+    const allLocked = ids.length > 0 && ids.every((id) => skippedFor(scope).has(id));
+    await setAllLocked(scope, ids, !allLocked);
+  });
+  paintLockAll(btn, scope, ids);
+  return btn;
+}
+
+/** Write the current lock state of a whole list onto its button. */
+function paintLockAll(btn, scope, ids) {
+  if (!btn) return false;
+  const skipped = skippedFor(scope);
+  const allLocked = ids.length > 0 && ids.every((id) => skipped.has(id));
   btn.textContent = allLocked ? 'mở khoá tất cả' : 'khoá tất cả';
   btn.title = allLocked
     ? 'Đưa toàn bộ danh sách này vào vòng quay'
     : 'Loại toàn bộ danh sách này khỏi vòng quay';
-  btn.addEventListener('click', async () => {
-    await setAllLocked(scope, ids, !allLocked);
-  });
-  return btn;
+  btn.setAttribute?.('aria-pressed', allLocked ? 'true' : 'false');
+  return allLocked;
 }
 
 /**

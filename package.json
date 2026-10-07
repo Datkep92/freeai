@@ -7,11 +7,12 @@
   "scripts": {
     "start": "node scripts/serve.js",
     "serve": "node scripts/serve.js",
-    "test": "node --no-experimental-fetch tests/run-all.js",
-    "bench": "node --no-experimental-fetch tests/bench.js",
+    "test": "node tests/run-all.js",
+    "bench": "node tests/bench.js",
     "probe": "node probe-urls.mjs",
     "uicheck": "node uicheck.mjs",
-    "classify": "node probe-classify.mjs"
+    "classify": "node probe-classify.mjs",
+    "mock": "node scripts/mock-provider.js"
   },
   "engines": {
     "node": ">=18"

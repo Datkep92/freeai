@@ -4,6 +4,7 @@ import { ProviderRegistry } from '../core/provider-registry.js';
 import { ModelRegistry } from '../core/model-registry.js';
 import { KeyRegistry } from '../core/key-registry.js';
 import { exportRegistry, importRegistry } from '../core/io.js';
+import { secretFields } from '../core/db/schema.js';
 import { createMockFetch } from './mock-fetch.js';
 
 const KEY_A = 'oc_sk_A1b2C3d4E5f6G7h8I9j0';

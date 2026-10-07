@@ -76,6 +76,11 @@
 
   --safe-t: env(safe-area-inset-top, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
+
+  /* How tall the app bar is. A URL header inside the list sticks just below it,
+     and both sides read this one value so the bar and the thing that has to
+     clear it can never drift apart. */
+  --appbar-h: calc(var(--safe-t) + 62px);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -98,6 +103,12 @@ html, body {
    text selection the user then has to dismiss. */
 button, input, select { font: inherit; color: inherit; }
 button { -webkit-user-select: none; user-select: none; }
+
+/* `hidden` has to win over every display rule below. A button is display:inline-
+   flex, and an author rule beats the browser's own [hidden] { display:none }, so
+   without this a control the app had hidden kept its place on screen - the scan
+   screen showed a live "Huỷ" button while nothing was running. */
+[hidden] { display: none !important; }
 
 /* ============================================================ top app bar */
 
@@ -261,21 +272,115 @@ body.nav-open { overflow: hidden; }
 }
 .side-add svg { width: 13px; height: 13px; }
 
-/* One control row above the list: what can be done to every URL, and how the
-   list is grouped. Both answer a question about the whole list rather than one
-   row, so they sit together - and together they take a single line, which is
-   what keeps them visible on a phone without scrolling. */
+/* Everything that acts on the whole URL list, stacked in one block above it:
+   lock-all and the order on the first line, the URL search under it, and the
+   classification buttons last. They are here together because they are all
+   answers to "which URL am I looking at" rather than about one row, and a phone
+   has room for three short lines and not for three separate toolbars. */
 .side-tools {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 8px;
   padding: 0 2px 10px;
   flex: none;
 }
+.side-tools-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .side-lockall {
   display: flex;
   min-width: 0;
+}
+
+/* ---- find one URL ---- */
+
+/* The same magnifier, the same offset and the same rounded field as the model
+   search on the main screen: one search looks like the other, so the user does
+   not have to learn which box they are in. Only the height gives way - the
+   drawer is a jump list, not a page. */
+.side-search { position: relative; }
+.side-search-icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 15px;
+  height: 15px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+/* Written as `.side-search input...` rather than a bare class on purpose: the
+   field rules further down the sheet are keyed on `input[type="search"]`, which
+   outranks a single class, so a plain class here lost the padding and the
+   magnifier ended up sitting on top of the placeholder. */
+.side-search input.side-search-input {
+  min-height: 38px;
+  padding: 8px 34px;
+  font-size: 16px;
+}
+.side-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: var(--text-3);
+}
+.side-search-clear svg { width: 14px; height: 14px; }
+
+/* ---- classify the URLs ---- */
+
+/* One row of answers to "which of these can I use right now". The class buttons
+   are the two facts a scan can prove; "Tất cả" undoes them, and "0đ ↓" is the
+   order, drawn quieter because it changes how the list reads rather than what
+   is in it. */
+.side-class {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.classbtn,
+.sortbtn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 11px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease),
+              border-color var(--fast) var(--ease);
+}
+.classbtn.on {
+  background: var(--surface-4);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+/* Offered, not selected: a dashed edge marks the one control in the row that is
+   an order rather than a filter. */
+.sortbtn {
+  border-style: dashed;
+  font-variant-numeric: tabular-nums;
+}
+.sortbtn.on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* The classification control.
@@ -334,30 +439,12 @@ body.nav-open { overflow: hidden; }
   pointer-events: none;
 }
 
-/* What the dots on each row mean. Kept because the drawer shows three levels of
-   certainty per URL and a coloured dot alone is not a label. */
-.side-legend {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px 9px;
-  margin: 0 0 8px;
-  padding: 0 2px;
-  color: var(--text-3);
-  font-size: 10px;
-}
-.lg {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  margin-right: 4px;
-  vertical-align: middle;
-}
-.lg-free { background: var(--ok); }
-.lg-likely { background: var(--warn); }
-.lg-unknown { background: var(--unknown); }
-.lg-paid { background: var(--paid); }
+/* The legend that used to sit here - "Chắc 0đ / Có thể 0đ / Chưa rõ / Có phí"
+   with a coloured dot each - is gone, along with its .lg dots. It described dots
+   that are no longer on these rows: a URL row says what it needs in words ("quét
+   ngay", "cần key"), and the colour scale it explained belongs to the model rows
+   on the main screen, which have their own chips. A key that explains a thing
+   nobody can see is noise above the list. */
 
 .side-list {
   flex: 1;
@@ -679,7 +766,7 @@ button.mini.lockall:active { background: var(--surface-3); color: var(--text); }
   color: var(--text-3);
   pointer-events: none;
 }
-input[type="search"], input[type="text"], input[type="url"], input[type="password"], select {
+input[type="search"], input[type="text"], input[type="url"], input[type="password"], textarea, select {
   width: 100%;
   min-height: var(--tap);
   padding: 10px 12px;
@@ -691,9 +778,26 @@ input[type="search"], input[type="text"], input[type="url"], input[type="passwor
 }
 .search-wrap .search { padding-left: 38px; }
 input::placeholder { color: var(--text-3); }
-input:focus, select:focus, button:focus-visible {
+input:focus, textarea:focus, select:focus, button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+textarea {
+  resize: vertical;
+  min-height: calc(var(--tap) + 24px);
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font: inherit;
+  font-size: 16px;
+}
+.optional {
+  margin-left: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--text-3);
 }
 label {
   display: block;
@@ -731,11 +835,20 @@ label {
    push its own id off the row. */
 .model {
   display: flex;  align-items: center;
+  flex-wrap: wrap;
   gap: 2px;
   padding: 4px 4px 4px 0;
   border-top: 1px solid var(--line);
 }
 .model:first-child { border-top: none; }
+
+/* Two lines when the URL has keys: the model owns the first, its APIs the
+   second. `order` is what keeps the ⓘ and the lock beside the name - without
+   it the wrapping would put them after the chips, on the second line, where
+   they would look like controls on the API rather than on the model. */
+.model .modelopen { order: 1; }
+.model > .iconbtn { order: 2; }
+.model > .lockbtn { order: 3; }
 
 .modelopen {
   flex: 1;
@@ -829,7 +942,8 @@ label {
 }
 .model .speed.measured { color: var(--ok); background: var(--ok-dim); }
 
-.model .chev { flex: none; align-self: center; width: 16px; height: 16px; color: var(--text-3); }
+/* Says what a tap does before it is tapped: this row copies, it does not open. */
+.model .taphint { flex: none; align-self: center; width: 16px; height: 16px; color: var(--text-3); }
 
 /* ---- lock state ----
    The glyph carries it, and it is told apart from its neighbours by fill and
@@ -878,27 +992,104 @@ label {
   border-style: dashed;
 }
 
-/* ================================================== priority / rotation */
+/* ============================================ one block per URL: header + models */
 
-.prio {
-  margin-bottom: 10px;
-  padding: 12px;
-  background: var(--surface);
+/* The header is sticky because it is the only place the URL is written on this
+   screen, and a column of monospace model ids with no URL in sight has no
+   answer to "which provider am I looking at". It stops just below the app bar
+   rather than sliding under it. */
+.urlblock { margin-bottom: 14px; }
+.urlblock.on .urlhead { border-color: var(--accent); }
+.urlblock.locked .urlhead { opacity: .5; }
+
+.urlhead {
+  position: sticky;
+  top: var(--appbar-h);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 4px 4px 0;
+  margin-bottom: 6px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
   border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
 }
-.prio-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.prio-title { font-size: 12px; color: var(--text-2); font-weight: 600; }
-.prio-select { flex: 1; min-width: 150px; min-height: 38px; font-size: 13px; padding: 8px 10px; }
-/* Explains what the current rule actually produces, so an order that looks
-   wrong is answerable without guessing which setting is active. */
-.prio-sum {
-  margin-top: 8px;
-  font-size: 11px;
+
+/* The copy target for the URL. Three lines, in the order the questions get
+   asked: what is it, where does it point, and what is in it. */
+.urlcopy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  text-align: left;
+}
+.urlcopy .uname {
+  font-size: 14px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.urlcopy .ubase {
+  font-size: 10px;
   color: var(--text-3);
-  word-break: break-word;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
 }
-.prio-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.urlcopy .umeta {
+  font-size: 11px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- the API chips on a model row ----
+   A key belongs to the URL, so the same chips sit beside every model of that
+   URL. 34px, the same size as the filter chips: this is a copy target, not the
+   row's main action, and a full 44px target here would make every row two lines
+   taller than the thing it describes. */
+.apichips {
+  order: 4;
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 10px 8px 31px;
+}
+.apichip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  max-width: 100%;
+  padding: 4px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.apichip:active { background: var(--surface-4); color: var(--text); }
+.apichip .apiname {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .empty {
   padding: 16px 12px;
@@ -908,11 +1099,6 @@ label {
 }
 
 /* ================================================== tabs + panes */
-
-/* A row of buttons. Used under a URL's model list and under the key list, so
-   the two never end up with different spacing. */
-.actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
-.actions button { flex: 1 1 auto; min-width: 120px; }
 
 .tabs {
   display: flex;
@@ -1136,6 +1322,17 @@ dialog:not([open]) { display: none; }
 }
 .sheet-foot > button { flex: 1; }
 
+/* A footer with one primary and a pair of secondaries stacks them. Side by side
+   on a 360px screen each button gets about 100px, and "CHECK TẤT CẢ API" no
+   longer fits without shrinking or truncating the label. */
+.sheet-foot-stack { flex-direction: column; }
+.sheet-foot-stack > button { flex: none; }
+.foot-row {
+  display: flex;
+  gap: 8px;
+}
+.foot-row > button { flex: 1; }
+
 /* A sheet that has no scrolling body at all - the action list - still needs the
    footer pinned, so the list is the flexible part here instead. */
 .sheet-actions {
@@ -1181,6 +1378,142 @@ dialog:not([open]) { display: none; }
   color: var(--text-3);
   font-size: 10px;
   font-family: inherit;
+}
+
+/* ---- manual model test ---- */
+
+/* The value being called, shown before the call. Read-only on purpose: the point
+   of the screen is to say what was tested, so letting these be edited would mean
+   the result no longer matches the label above it. */
+.copybox-read {
+  background: var(--surface);
+  color: var(--text-2);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* A note under a field label. It says what the field does that the label
+   cannot: "dùng cho một lần gọi này" is the difference between a key stored on
+   the URL and a key typed in for this one test. */
+.field-note {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-3);
+}
+
+.testkey,
+.testinput {
+  width: 100%;
+  min-height: var(--tap);
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.testinput { font-family: inherit; }
+
+/* The result box is the only part that changes after the run, so it is the only
+   part with state colours. The three states are named, not just coloured, so
+   the verdict is readable without relying on hue. */
+.testresult {
+  padding: 11px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+.testresult-idle { color: var(--text-3); }
+
+/* ---- bulk probe ---- */
+
+/* The cost of the run, sitting directly under the number that decides it. The
+   warning threshold is not decoration: past roughly this many requests the user
+   is making a quota decision rather than a curiosity one, and that should be
+   visible before the button is pressed rather than in a log afterwards. */
+.bulk-estimate {
+  margin: 8px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.bulk-estimate.warn { color: var(--warn); }
+
+.bulkrows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* One model, one verdict. The row is muted until it has an answer, so a list
+   that is still filling in does not look like a list of failures. */
+.bulk-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+}
+.bulk-row.pending { color: var(--text-3); }
+.bulk-row.running { border-color: var(--line-strong); color: var(--text-2); }
+.bulk-row .bulk-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+.bulk-row .bulk-verdict { flex: none; color: var(--text-3); font-weight: 600; }
+.bulk-row .bulk-lat {
+  flex: none;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.bulk-row.ok { border-color: color-mix(in srgb, var(--ok) 30%, var(--line)); }
+.bulk-row.ok .bulk-verdict { color: var(--ok); }
+.bulk-row.ok .bulk-name { color: var(--text); }
+.bulk-row.bad .bulk-verdict { color: var(--warn); }
+.bulk-row.bad .bulk-name { color: var(--text-2); }
+.bulk-row.hard .bulk-verdict { color: var(--bad); }
+
+.bulk-empty {
+  padding: 10px;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+}
+
+.testresult-idle { color: var(--text-3); }
+.testresult-run { color: var(--text-2); }
+.testresult-ok {
+  color: var(--ok);
+  background: var(--ok-dim);
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+}
+.testresult-bad {
+  color: var(--bad);
+  background: var(--bad-dim);
+  border-color: color-mix(in srgb, var(--bad) 35%, transparent);
 }
 
 .warnbox {

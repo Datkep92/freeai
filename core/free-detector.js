@@ -128,6 +128,38 @@ export function mergeEvidence(existing = [], incoming = []) {
 }
 
 /**
+ * The one definition of "0đ" the whole app agrees on.
+ *
+ * A model qualifies when the provider published a zero price (FREE_VERIFIED) or
+ * its name says free (FREE_LIKELY). FREE_UNKNOWN is deliberately left out: the
+ * user does not use paid models, and a model nobody priced is one the app
+ * cannot promise costs nothing. Those rows are not discarded - they stay in
+ * storage and stay reachable behind their own filter - they are simply never
+ * presented as "what I can use for free".
+ *
+ * Kept here rather than in the UI so the list, the chips, every count that
+ * reads "N model 0đ" and the router all answer the same question the same way.
+ */
+export function isFreeModel(model) {
+  if (!model) return false;
+  return model.freeStatus === FREE.FREE_VERIFIED || model.freeStatus === FREE.FREE_LIKELY;
+}
+
+/**
+ * A model with nothing known about its price.
+ *
+ * A record written before `freeStatus` existed, or by a provider that published
+ * no pricing at all, arrives with no value; treating that as "unknown" rather
+ * than as "not unknown" is what keeps such a row findable behind the filter
+ * instead of invisible under every chip.
+ */
+export function isUnknownPrice(model) {
+  if (!model) return false;
+  if (model.freeStatus === FREE.PAID) return false;
+  return model.freeStatus == null || model.freeStatus === FREE.FREE_UNKNOWN;
+}
+
+/**
  * Order candidates for the first-success verifier (plan 12).
  *
  * Cheapest to try first, so the common case costs exactly one request.

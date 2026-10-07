@@ -9,6 +9,18 @@
 import { BUILTIN_LIST } from './adapters/builtin.js';
 import { createAdapter } from './adapters/builtin.js';
 import { isoNow, makeId, normalizeBaseUrl } from './util.js';
+import { CHILDREN_OF } from './db/schema.js';
+
+export function normalizeWebsiteUrl(value) {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
 
 export class ProviderRegistry {
   constructor(storage) {
@@ -26,13 +38,15 @@ export class ProviderRegistry {
         const needsUpdate =
           existing.freeTier !== (preset.freeTier ?? 'none') ||
           (existing.note ?? '') !== (preset.note ?? '') ||
-          (existing.verified ?? null) !== (preset.verified ?? null);
+          (existing.verified ?? null) !== (preset.verified ?? null) ||
+          (existing.websiteURL ?? '') !== (normalizeWebsiteUrl(preset.websiteURL) ?? '');
         if (needsUpdate) {
           await this.storage.put('providers', {
             ...existing,
             freeTier: preset.freeTier ?? 'none',
             note: preset.note ?? '',
             verified: preset.verified ?? null,
+            websiteURL: normalizeWebsiteUrl(preset.websiteURL),
             updatedAt: isoNow(),
           });
         }
@@ -56,6 +70,7 @@ export class ProviderRegistry {
         // different from a probe that said the entry is broken.
         verified: preset.verified ?? null,
         verifiedAt: preset.verified ? (preset.verifiedAt ?? null) : null,
+        websiteURL: normalizeWebsiteUrl(preset.websiteURL),
         enabled: true,
         status: 'NEW',
         lastScanAt: null,
@@ -80,14 +95,20 @@ export class ProviderRegistry {
    * Duplicate check is on the normalised URL, not the name: the same gateway
    * pasted with and without a trailing slash is one provider, and two
    * different names pointing at one host would double-scan it.
+   *
+   * Asked of the index first, because this runs on every keystroke of the add
+   * dialog. The scan behind it is the fallback for rows that were imported with
+   * an unnormalised URL, which the unique index cannot match on.
    */
   async findByUrl(baseURL) {
     const target = normalizeBaseUrl(baseURL);
+    const indexed = await this.storage.find('providers', { baseURL: target });
+    if (indexed) return indexed;
     const all = await this.list();
     return all.find((p) => normalizeBaseUrl(p.baseURL) === target) ?? null;
   }
 
-  async upsert({ name, baseURL, protocol = 'openai-compatible', modelsPath, chatPath, type = 'CUSTOM' }) {
+  async upsert({ name, baseURL, websiteURL, protocol = 'openai-compatible', modelsPath, chatPath, type = 'CUSTOM' }) {
     const normalized = normalizeBaseUrl(baseURL);
     if (!normalized) return { provider: null, created: false, reason: 'EMPTY_URL' };
 
@@ -103,6 +124,7 @@ export class ProviderRegistry {
       protocol,
       modelsPath: modelsPath || '/models',
       chatPath: chatPath || '/chat/completions',
+      websiteURL: normalizeWebsiteUrl(websiteURL),
       enabled: true,
       status: 'NEW',
       lastScanAt: null,
@@ -122,17 +144,24 @@ export class ProviderRegistry {
     return updated;
   }
 
-  /** Remove a provider and everything that belongs to it. */
+  /**
+   * Remove a provider and everything that belongs to it.
+   *
+   * Which stores those are is read from the schema's relations rather than
+   * listed here, because this list used to be the third copy of it: forgetting
+   * an entry left rows pointing at a URL that no longer exists, and every list in
+   * the app is grouped by URL, so those rows became invisible - still on disk,
+   * never shown, never cleaned.
+   *
+   * `metrics` is in that list too, which it was not before: a measurement of a
+   * deleted URL kept its name in the speed ranking.
+   */
   async remove(id) {
-    const keys = await this.storage.list('keys');
-    const models = await this.storage.list('models');
-    const mappings = await this.storage.list('mappings');
-
-    for (const row of [...keys, ...models, ...mappings]) {
-      if (row.providerId === id) {
-        const store = keys.includes(row) ? 'keys' : models.includes(row) ? 'models' : 'mappings';
-        await this.storage.remove(store, row.id);
-      }
+    const children = CHILDREN_OF.providers ?? [];
+    for (const relation of children) {
+      const rows = await this.storage.findMany(relation.store, { where: { [relation.field]: id } });
+      if (!rows.length) continue;
+      await this.storage.removeMany(relation.store, rows.map((row) => row.id));
     }
     await this.storage.remove('providers', id);
   }
@@ -141,20 +170,21 @@ export class ProviderRegistry {
     return createAdapter(provider);
   }
 
-  /** Aggregate health for the provider card. */
+  /**
+   * Aggregate health for the provider card.
+   *
+   * Counts rather than rows. The card only needs four numbers, and reading every
+   * model of every URL to produce them was the most expensive thing the drawer
+   * did on each render.
+   */
   async summary(providerId) {
-    const [models, keys, mappings] = await Promise.all([
-      this.storage.list('models'),
-      this.storage.list('keys'),
-      this.storage.list('mappings'),
+    const [models, freeModels, keys, mappings] = await Promise.all([
+      this.storage.count('models', { providerId }),
+      this.storage.count('models', { providerId, active: true }),
+      this.storage.count('keys', { providerId }),
+      this.storage.count('mappings', { providerId }),
     ]);
-    const mine = models.filter((m) => m.providerId === providerId);
-    return {
-      models: mine.length,
-      freeModels: mine.filter((m) => m.active !== false).length,
-      keys: keys.filter((k) => k.providerId === providerId).length,
-      mappings: mappings.filter((m) => m.providerId === providerId).length,
-    };
+    return { models, freeModels, keys, mappings };
   }
 }
 

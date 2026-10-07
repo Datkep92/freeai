@@ -4,6 +4,7 @@ import { ProviderRegistry } from '../core/provider-registry.js';
 import { ModelRegistry } from '../core/model-registry.js';
 import { KeyRegistry } from '../core/key-registry.js';
 import { KeyVerifier } from '../core/key-verifier.js';
+import { BulkProbe, STOP } from '../core/bulk-probe.js';
 import { Mapper } from '../core/mapper.js';
 import { Router } from '../core/router.js';
 import { classifyErrorProbe } from './helpers.js';
@@ -36,6 +37,46 @@ async function setup(modelIds, { keySecret = KEY_A, chat } = {}) {
 
   const verifier = new KeyVerifier(storage, { providers, models, mapper });
   return { mock, storage, providers, models, keys, mapper, provider, key, verifier };
+}
+
+/** Build a provider with `models` and one key, ready for a bulk run. */
+async function setupBulk(models, { keySecret = KEY_A, chat } = {}) {
+  const mock = createMockFetch({
+    '/models': { body: { data: [] } },
+    '/chat/completions': chat ?? { body: { choices: [{ message: { content: 'OK' } }] } },
+  });
+  globalThis.fetch = mock;
+
+  const storage = new MemoryStorage();
+  const providers = new ProviderRegistry(storage);
+  const registry = new ModelRegistry(storage);
+  const keys = new KeyRegistry(storage);
+  const mapper = new Mapper(storage);
+
+  const { provider } = await providers.upsert({ name: 'T', baseURL: 'https://t.test/v1' });
+  for (const m of models) {
+    await registry.upsertDiscovered({
+      providerId: provider.id,
+      modelId: m.modelId,
+      pricing: m.pricing ?? { prompt: '0', completion: '0' },
+    });
+  }
+  const { key } = await keys.add({ providerId: provider.id, secret: keySecret });
+
+  const prober = new BulkProbe(storage, { providers, models: registry, mapper });
+  return { mock, storage, providers, models: registry, keys, mapper, provider, key, prober };
+}
+
+/** Every model id a request actually named. */
+function requestedModels(mock) {
+  return mock.calls
+    .filter((c) => c.url.includes('/chat/completions'))
+    .map((c) => JSON.parse(String(c.body)).model);
+}
+
+/** A chat route that refuses everything with one status. */
+function refuseAll(status, message) {
+  return () => ({ status, body: { error: { message } } });
 }
 
 /** A chat route where only `failing` is refused. */
@@ -272,6 +313,165 @@ export function registerVerifyCases() {
       const all = await router.candidates();
       assertEqual(all.length, 1, 'UNTESTED is not a reason to skip it');
       assertEqual(all[0].mapping.status, STATUS.UNTESTED);
+    });
+  });
+
+  describe('BP. One key across many models', () => {
+    it('BP1: the limit is the number of requests actually sent', async () => {
+      const { mock, key, provider, prober } = await setupBulk(
+        ['m1', 'm2', 'm3', 'm4', 'm5'].map((modelId) => ({ modelId }))
+      );
+
+      const r = await prober.run({ providerId: provider.id, keyId: key.id, limit: 3 });
+
+      assertEqual(r.requests, 3, 'three requests for a limit of three');
+      assertEqual(r.results.length, 3, 'and three results');
+      assertEqual(requestedModels(mock).length, 3, 'the provider saw exactly three');
+    });
+
+    it('BP2: a paid model is never probed, however many there are', async () => {
+      const { mock, key, provider, prober } = await setupBulk([
+        { modelId: 'free-one' },
+        { modelId: 'free-two' },
+        { modelId: 'expensive', pricing: { prompt: '0.01', completion: '0.02' } },
+      ]);
+
+      await prober.run({ providerId: provider.id, keyId: key.id, limit: 10 });
+      const asked = requestedModels(mock);
+
+      // The whole app exists to find things that cost nothing. A batch run that
+      // quietly spends money would be the worst bug in the codebase, so this is
+      // checked against what the provider actually received, not just the list.
+      assertEqual(asked.includes('expensive'), false, 'the paid model was never called');
+      assertEqual(asked.sort().join(','), 'free-one,free-two', 'and only the free ones were');
+    });
+
+    it('BP3: a run writes a verdict per model, and metrics only for successes', async () => {
+      const { mock, key, provider, prober, mapper, storage } = await setupBulk(
+        [{ modelId: 'good' }, { modelId: 'broken' }],
+        {
+          chat: (url, options) =>
+            String(options.body).includes('broken')
+              ? { status: 403, body: { error: { message: 'model broken not allowed' } } }
+              : { body: { choices: [{ message: { content: 'OK' } }] } },
+        }
+      );
+      mock.reset();
+
+      await prober.run({ providerId: provider.id, keyId: key.id, limit: 10 });
+
+      const rows = await mapper.list(provider.id);
+      const good = rows.find((m) => m.modelId === 'good');
+      const broken = rows.find((m) => m.modelId === 'broken');
+      assertEqual(good.status, STATUS.HEALTHY, 'the working model is recorded healthy');
+      assertEqual(good.verified, true, 'and verified');
+      assertEqual(broken.status, STATUS.MODEL_DENIED, 'the refused one keeps its own reason');
+
+      const metrics = await storage.list('metrics');
+      assertEqual(metrics.length, 1, 'exactly one measurement row');
+      assert(
+        String(metrics[0].modelKey ?? metrics[0].modelId ?? '').includes('good') ||
+          metrics[0].modelId === 'good',
+        'and it belongs to the model that answered: ' + JSON.stringify(metrics[0].modelId)
+      );
+    });
+
+    it('BP4: five failures that look like the key stop the run', async () => {
+      const { mock, key, provider, prober } = await setupBulk(
+        Array.from({ length: 20 }, (_, i) => ({ modelId: `m${i}` })),
+        { chat: refuseAll(401, 'invalid api key') }
+      );
+      mock.reset();
+
+      const r = await prober.run({ providerId: provider.id, keyId: key.id, limit: 20 });
+
+      // A dead key answers the same way on every model. Without this the run
+      // would spend its whole budget rediscovering one fact.
+      assertEqual(r.stopped, true, 'the run stopped itself');
+      assertEqual(r.stopReason, STOP.KEY_SUSPECT, 'and says why');
+      assertEqual(r.requests, 5, 'after five attempts, not twenty');
+    });
+
+    it('BP5: the key is marked once, from the failure that points at it', async () => {
+      const { key, provider, prober, storage } = await setupBulk(
+        Array.from({ length: 20 }, (_, i) => ({ modelId: `m${i}` })),
+        { chat: refuseAll(401, 'invalid api key') }
+      );
+
+      await prober.run({ providerId: provider.id, keyId: key.id, limit: 20 });
+      const after = await storage.get('keys', key.id);
+
+      assertEqual(after.status, STATUS.AUTH_INVALID, 'the key is no longer treated as usable');
+      assert(after.lastError, 'with the reason kept');
+      assert(
+        !String(after.lastError).includes(key.secret),
+        'and the secret itself is never written into the error'
+      );
+    });
+
+    it('BP6: many refusals that name the model do not stop the run', async () => {
+      const { mock, key, provider, prober } = await setupBulk(
+        Array.from({ length: 20 }, (_, i) => ({ modelId: `m${i}` })),
+        { chat: refuseAll(403, 'model not allowed for this key') }
+      );
+      mock.reset();
+
+      const r = await prober.run({ providerId: provider.id, keyId: key.id, limit: 12 });
+
+      // A key blocked from 20 models is one healthy key with a restricted grant,
+      // not a broken secret. Stopping here would hide the rest of the URL.
+      assertEqual(r.stopped, false, 'the run finished what it was asked to');
+      assertEqual(r.requests, 12, 'all twelve models were tried');
+    });
+
+    it('BP7: a model refusing this key never marks the key itself', async () => {
+      const { key, provider, prober, storage } = await setupBulk(
+        [{ modelId: 'blocked' }, { modelId: 'fine' }],
+        { chat: refuseModel('blocked', 403, 'model blocked not allowed for this key') }
+      );
+
+      await prober.run({ providerId: provider.id, keyId: key.id, limit: 10 });
+      const after = await storage.get('keys', key.id);
+
+      // Writing this verdict onto the key would remove a working credential
+      // from the rotation, because of one model it could not run.
+      assertEqual(after.status, STATUS.UNTESTED, 'the key is exactly as it was');
+    });
+
+    it('BP8: an exhausted quota stops the run immediately', async () => {
+      const { mock, key, provider, prober } = await setupBulk(
+        Array.from({ length: 20 }, (_, i) => ({ modelId: `m${i}` })),
+        { chat: refuseAll(402, 'insufficient credits') }
+      );
+      mock.reset();
+
+      const r = await prober.run({ providerId: provider.id, keyId: key.id, limit: 20 });
+
+      assertEqual(r.stopReason, STOP.QUOTA, 'quota is terminal and unambiguous');
+      assertEqual(r.requests, 1, 'so there is nothing to gain from a second request');
+    });
+
+    it('BP9: cancelling keeps every result measured before the stop', async () => {
+      const { key, provider, prober, mapper } = await setupBulk([
+        { modelId: 'a' },
+        { modelId: 'b' },
+        { modelId: 'c' },
+      ]);
+
+      let seen = 0;
+      const r = await prober.run({
+        providerId: provider.id,
+        keyId: key.id,
+        limit: 10,
+        run: { cancelled: () => (seen += 1) > 2 },
+      });
+
+      assertEqual(r.stopReason, STOP.CANCELLED, 'the run reports being cancelled');
+      assert(r.requests >= 1, 'after at least one request');
+      // A partial run is still real evidence: throwing it away would waste the
+      // quota the user already spent.
+      const rows = await mapper.list(provider.id);
+      assertEqual(rows.length, r.results.length, 'and every result it reported was written');
     });
   });
 }

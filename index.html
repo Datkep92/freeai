@@ -11,32 +11,33 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Free Model Hub</title>
-<link rel="stylesheet" href="./styles.css?v=7" />
+<link rel="stylesheet" href="./styles.css?v=14" />
 </head>
 <body>
 
 <!-- ============================ top app bar ============================
-     One bar, one job: say which URL is open, and put the four actions that
-     act on that URL within thumb reach of the right hand. -->
+     One bar, one job: say what the list below is, and keep a way back to the
+     URL drawer within thumb reach.
+
+     There used to be two more buttons here - "API" and "Model" - that acted on
+     "the URL that is open". The main screen no longer has one open URL: it shows
+     every URL at once, so there is nothing for those two to act on, and a button
+     whose target is invisible is worse than no button. Both actions are still
+     one tap away on the URL they belong to, in that URL's own menu. -->
 <header class="appbar">
   <button id="btnMenu" class="iconbtn appbar-menu" aria-label="Mở danh sách URL" aria-expanded="false">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
   </button>
 
   <div class="appbar-title">
-    <h1 id="treeTitle">Chọn URL</h1>
+    <h1 id="treeTitle">Tất cả model 0đ</h1>
     <!-- The count sits under the title rather than in the filter bar: it is a
          fact about the list below, and it moves with the title. -->
     <span id="filterCount" class="appbar-sub">Quét model 0đ · lưu API theo từng URL</span>
   </div>
 
-  <button id="btnAddKeyUrl" class="appbar-btn" aria-label="Thêm API key cho URL này">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.8 7.8 5.5 5.5 0 0 1 7.8-7.8zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3"/></svg>
-    <span>API</span>
-  </button>
-  <button id="btnAddModel" class="appbar-btn" aria-label="Thêm model thủ công">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-    <span>Model</span>
+  <button id="appbarAddUrl" class="appbar-btn mini" aria-label="Thêm URL mới">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6v-6h2v6h6v2z"/></svg>
   </button>
 </header>
 
@@ -56,33 +57,55 @@
     </button>
   </div>
 
-  <!-- What the dots on the rows below mean, stated once, and in the same words
-       as the filter chips so the two are read as one scale. "Có phí" is here
-       and not in the filter because a URL can be a paid one - the main list
-       never is. -->
-  <p class="side-legend">
-    <i class="lg lg-free"></i>Chắc 0đ
-    <i class="lg lg-likely"></i>Có thể 0đ
-    <i class="lg lg-unknown"></i>Chưa rõ
-    <i class="lg lg-paid"></i>Có phí
-  </p>
-
   <!-- One control row: what can be done to the whole list, and how it is
        grouped. Both live together because they are the same kind of decision -
        something about every URL rather than one URL - and separating them put
        the classification control below the fold on a phone. -->
   <div class="side-tools">
-    <div id="lockAllUrls" class="side-lockall"></div>
-    <label class="side-sort">
-      <span class="sort-label">Xếp</span>
-      <select id="urlSort" class="sort-select" aria-label="Cách xếp danh sách URL">
-        <option value="manual">Tôi đã kéo</option>
-        <option value="name">Tên A→Z</option>
-        <option value="models">Nhiều model 0đ</option>
-        <option value="keys">Nhiều API</option>
-      </select>
-      <svg class="sort-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-    </label>
+    <div class="side-tools-row">
+      <div id="lockAllUrls" class="side-lockall"></div>
+      <label class="side-sort">
+        <span class="sort-label">Xếp</span>
+        <select id="urlSort" class="sort-select" aria-label="Cách xếp danh sách URL">
+          <option value="manual">Tôi đã kéo</option>
+          <option value="name">Tên A→Z</option>
+          <option value="models">Nhiều model 0đ</option>
+          <option value="keys">Nhiều API</option>
+        </select>
+        <svg class="sort-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </label>
+    </div>
+
+    <!-- Find one URL among many. A URL is looked up by the two things that name
+         it - its label and where it points - because two entries can share a
+         name and the address is what tells them apart. It filters the list
+         below only; the model list on the main screen is a different question
+         and keeps its own box. -->
+    <div class="side-search">
+      <svg class="side-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zm10 2l-4.35-4.35"/></svg>
+      <input id="urlSearch" class="side-search-input" type="search" placeholder="Tìm URL..."
+             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" />
+      <button id="urlSearchClear" class="side-search-clear" aria-label="Xoá ô tìm URL" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- Classify the URLs by what it takes to use one. Two classes, because
+         that is the question a scan actually answers: can this be used right
+         now, or does it need a key first. The button also takes the class off,
+         so "tất cả" is a tap away without being a third answer to the same
+         question.
+
+         "0đ ↓" is beside them because it is the same kind of decision - how to
+         read the list - and it is a button rather than a fourth option in the
+         select above so the one order asked for most often is a single tap. -->
+    <div id="urlClass" class="side-class" role="group" aria-label="Phân loại URL">
+      <button class="classbtn on" data-urlclass="all" aria-pressed="true">Tất cả</button>
+      <button class="classbtn" data-urlclass="nokey" aria-pressed="false">Không cần key</button>
+      <button class="classbtn" data-urlclass="needkey" aria-pressed="false">Cần key</button>
+      <button id="urlSortFree" class="sortbtn" aria-pressed="false"
+              title="Xếp URL nhiều model 0đ trước">0đ ↓</button>
+    </div>
   </div>
 
   <div id="sidebarRoot" class="side-list"></div>
@@ -92,7 +115,10 @@
        many, and the foot one sat on top of the list on a short screen. The head
        button stays because it is reachable however far the list is scrolled. -->
   <div class="side-foot">
-    <p class="side-hint">Nhấn giữ một dòng để kéo · bấm biểu tượng khoá để loại khỏi vòng quay</p>
+    <!-- Written once, and rewritten while a search or a class is narrowing the
+         list: dragging is off then, and a line that still promised it would be
+         describing a gesture that does nothing. -->
+    <p class="side-hint" id="sideHint">Nhấn giữ một dòng để kéo · bấm biểu tượng khoá để loại khỏi vòng quay</p>
   </div>
 </aside>
 
@@ -108,26 +134,28 @@
   </section>
 
   <!-- One choice among neighbours, so it is drawn as one object: a segmented
-       control with a single selected cell rather than four loose pills.
+       control with a single selected cell rather than three loose pills.
 
-       The three narrow chips are not three kinds of model. They are three
-       answers to the same question - "how sure are we this costs nothing" - so
-       the words say the degree, not the category. That is why they read
-       "chắc / có thể / chưa rõ" and why "tất cả" is the only chip that speaks
-       about the whole set.
+       These are three answers to one question - "how do I know this costs
+       nothing" - not three kinds of model, so the labels name the evidence.
+       "0đ" is the list itself: a price the provider published as zero, or a name
+       that says free. "Chắc 0đ" narrows to what a provider actually priced at
+       zero. "Chưa rõ giá" is the way back to the models with no price and no
+       name hint - they are never mixed into the list, and never discarded
+       either, so a provider that publishes no pricing cannot hide a free model
+       for good.
 
        Nothing here can bring a paid model back: this list exists to answer
        "what can I use for nothing", and a paid row inside it is a trap. -->
-  <nav class="filter-row" aria-label="Lọc model 0đ theo mức độ chắc chắn">
-    <button class="chip on" data-filter="all"><span class="chip-label">Tất cả</span></button>
-    <button class="chip" data-filter="verified">
+  <nav class="filter-row" aria-label="Lọc model theo mức độ chắc chắn là 0đ">
+    <button class="chip on" data-filter="free">
+      <i class="cdot ok"></i><span class="chip-label">0đ</span><span class="chip-count"></span>
+    </button>
+    <button class="chip" data-filter="zero">
       <i class="cdot ok"></i><span class="chip-label">Chắc 0đ</span><span class="chip-count"></span>
     </button>
-    <button class="chip" data-filter="likely">
-      <i class="cdot warn"></i><span class="chip-label">Có thể 0đ</span><span class="chip-count"></span>
-    </button>
     <button class="chip" data-filter="unknown">
-      <i class="cdot unknown"></i><span class="chip-label">Chưa rõ</span><span class="chip-count"></span>
+      <i class="cdot"></i><span class="chip-label">Chưa rõ giá</span><span class="chip-count"></span>
     </button>
   </nav>
 
@@ -224,9 +252,20 @@
     </div>
   </div>
 
-  <div class="sheet-foot">
-    <button id="btnCheckOne" class="primary">✓ CHECK TẤT CẢ</button>
-    <button id="btnAddKey" class="small">+ THÊM API</button>
+  <!-- One full-width primary, the two secondary below it sharing a line. Three
+       buttons side by side on a 360px screen gives each about 100px, which is
+       too narrow for "CHECK TẤT CẢ API" and forces the labels to shrink or
+       truncate. -->
+  <div class="sheet-foot sheet-foot-stack">
+    <!-- Try this one model, naming it. "Check tất cả" answers a different
+         question - which of this URL's keys are alive - and a healthy key on a
+         dead model looks exactly like a healthy key. -->
+    <button id="btnTestModel" class="primary block">▶ THỬ MODEL NÀY</button>
+    <div class="foot-row">
+      <button id="btnBulk" class="small">⇉ QUÉT NHIỀU MODEL</button>
+      <button id="btnCheckOne" class="small">✓ CHECK TẤT CẢ API</button>
+    </div>
+    <button id="btnAddKey" class="small block">+ THÊM API</button>
   </div>
 </dialog>
 
@@ -283,6 +322,17 @@
     <label for="urlBase">Base URL</label>
     <input id="urlBase" type="url" autocomplete="off" autocapitalize="off"
            autocorrect="off" spellcheck="false" placeholder="https://example.com/v1" />
+    <label for="urlWebsite">Website <span class="optional">tuỳ chọn</span></label>
+    <input id="urlWebsite" type="url" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="https://example.com" />
+    <label for="urlModels">Model ban đầu <span class="optional">mỗi dòng một model</span></label>
+    <textarea id="urlModels" rows="3" autocomplete="off" autocapitalize="off"
+              autocorrect="off" spellcheck="false"
+              placeholder="model-free-1
+model-free-2"></textarea>
+    <label for="urlKey">API key ban đầu <span class="optional">tuỳ chọn</span></label>
+    <input id="urlKey" type="password" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="dán key để dùng cho mọi model của URL" />
   </div>
   <div class="sheet-foot">
     <button id="urlConfirm" class="primary">Thêm + quét</button>
@@ -313,6 +363,130 @@
   </div>
 </dialog>
 
+<!-- ============================ manual model test ============================
+     The verifier answers "does this key work on this URL". This answers a
+     different question: "does this exact model answer this exact prompt on this
+     exact key". A key can be healthy on one model and dead on another, and only
+     a request that names all three can tell you which.
+
+     It is a sheet rather than a button on the row because the three inputs are
+     all worth showing at once, with the result underneath them. -->
+<dialog id="testDialog" class="sheet sheet-form">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title">Thử model thủ công</h3>
+    <p class="hint" id="testHint">Gửi một request thật tới model này bằng key bạn chọn.</p>
+    <button id="testClose" class="sheet-x" aria-label="Đóng">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  <div class="sheet-body">
+    <!-- What is being called, stated before the call. A test whose target is
+         only visible after it runs cannot be trusted when it fails. -->
+    <div class="field">
+      <div class="field-label"><span>URL</span></div>
+      <div id="testUrl" class="copybox copybox-read"></div>
+    </div>
+
+    <div class="field">
+      <div class="field-label"><span>MODEL</span></div>
+      <div id="testModel" class="copybox copybox-read"></div>
+    </div>
+
+    <div class="field">
+      <div class="field-label">
+        <span>API KEY</span>
+        <span class="field-note">dùng cho một lần gọi này</span>
+      </div>
+      <!-- The key is chosen, never typed, so a test cannot silently run against a
+           different secret than the one stored on the URL. -->
+      <select id="testKey" class="testkey"></select>
+    </div>
+
+    <div class="field">
+      <div class="field-label">
+        <span>TIN NHẮN</span>
+        <span class="field-note">mặc định 1 câu, 8 token</span>
+      </div>
+      <input id="testPrompt" class="testinput" type="text" autocomplete="off"
+             autocapitalize="off" autocorrect="off" spellcheck="false"
+             placeholder="Trả lời bằng một từ" />
+    </div>
+
+    <div class="field">
+      <div class="field-label"><span>KẾT QUẢ</span></div>
+      <div id="testResult" class="testresult testresult-idle">chưa chạy</div>
+    </div>
+  </div>
+
+  <div class="sheet-foot">
+    <button id="testRun" class="primary block">▶ CHẠY THỬ</button>
+  </div>
+</dialog>
+
+<!-- ============================ bulk probe ============================
+     One key across many models of one URL. The verifier does the opposite -
+     it stops at the first model that answers - because it is asking about the
+     key. This asks which models are alive, which no single request can answer.
+
+     The limit is a number the user types, not a fixed cap, because the honest
+     answer to "how much should I spend" depends on which provider and which
+     quota. The estimate is shown above the button rather than after it. -->
+<dialog id="bulkDialog" class="sheet sheet-form">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title">Quét nhiều model</h3>
+    <p class="hint" id="bulkHint">Một API key, nhiều model của cùng URL. Mỗi model một request.</p>
+    <button id="bulkClose" class="sheet-x" aria-label="Đóng">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  <div class="sheet-body">
+    <div class="field">
+      <div class="field-label"><span>URL</span></div>
+      <div id="bulkUrl" class="copybox copybox-read"></div>
+    </div>
+
+    <div class="field">
+      <div class="field-label">
+        <span>API KEY</span>
+        <span class="field-note">dùng cho toàn bộ lượt quét</span>
+      </div>
+      <select id="bulkKey" class="testkey"></select>
+    </div>
+
+    <div class="field">
+      <div class="field-label">
+        <span>SỐ MODEL</span>
+        <span class="field-note" id="bulkCap">tối đa 200</span>
+      </div>
+      <!-- A number, not a slider: the exact figure is the decision, and a slider
+           hides it behind a thumb position nobody can read twice the same way. -->
+      <input id="bulkLimit" class="testinput" type="number" inputmode="numeric"
+             min="1" step="1" autocomplete="off" />
+      <!-- The cost, stated before the run rather than after the bill. Only the
+           output side is counted: prompt tokens are not knowable up front, and a
+           number that quietly omitted them would read as exact. -->
+      <p id="bulkEstimate" class="bulk-estimate"></p>
+    </div>
+
+    <div class="field">
+      <div class="field-label"><span>KẾT QUẢ</span><span class="field-note" id="bulkProgress"></span></div>
+      <div id="bulkRows" class="bulkrows"></div>
+    </div>
+  </div>
+
+  <div class="sheet-foot sheet-foot-stack">
+    <button id="bulkRun" class="primary block">▶ BẮT ĐẦU QUÉT</button>
+    <div class="foot-row">
+      <button id="bulkStop" class="small" hidden>DỪNG</button>
+      <button id="bulkDismiss" class="small">ĐÓNG</button>
+    </div>
+  </div>
+</dialog>
+
 <!-- ============================ row actions ============================
      A long press on any row opens this, so every action that used to need a
      crowded row of buttons is one press away without cluttering the list. -->
@@ -332,6 +506,6 @@
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="./app.js?v=7"></script>
+<script type="module" src="./app.js?v=14"></script>
 </body>
 </html>

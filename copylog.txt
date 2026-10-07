@@ -1,0 +1,132 @@
+==================================================
+FREE MODEL HUB — IMPLEMENTATION REPORT
+
+STATUS:
+PASS
+
+PROJECT PATH:
+dụ án x/du╠¢╠ú a╠ün x  (repo root; mở index.html qua static server, không dùng file://)
+
+STACK:
+Web tĩnh thuần ES modules — HTML + CSS + JS, không framework, không build step, không dependency.
+Dữ liệu người dùng trong IndexedDB. Đo tốc độ model bằng SSE thật.
+
+FILES CREATED:
+- scripts/mock-provider.js   (provider giả lập, node:net, không dependency, có CORS + SSE)
+
+FILES CHANGED:
+- core/free-detector.js   thêm isFreeModel() và isUnknownPrice() — định nghĩa "0đ" dùng chung
+- app.js                  màn hình chính thành một danh sách phẳng URL · model · API; bấm là copy;
+                          chip lọc 0đ / chắc 0đ / chưa rõ giá; bỏ 2 nút appbar "URL này";
+                          chuyển cấu hình quay vòng + khoá-cả-URL vào menu ⋮ của từng URL;
+                          ngăn kéo URL có ô tìm URL + nút phân loại URL (xem mục riêng bên dưới)
+- index.html              chip mới, tiêu đề mới, bỏ btnAddModel/btnAddKeyUrl; thêm #urlSearch /
+                          #urlSearchClear / #urlClass (3 nút) / #urlSortFree / #sideHint;
+                          bỏ dải chú thích màu; ?v=14
+- styles.css              header URL dính dưới appbar, chip API, dòng model 2 tầng; xoá CSS chết (.prio, .actions);
+                          hàng nút phân loại URL; [hidden] { display:none !important }; bỏ chú thích màu (.side-legend/.lg)
+- sw.js                   cache fmh-v14 → fmh-v17
+- package.json            thêm script "mock"
+- tests/cases-ui.js       viết lại case bám cấu trúc cũ + 8 case mới (UI48–UI55)
+- tests/cases-wiring.js   WR7 / WR17 / WR18 theo cấu trúc mới
+- uicheck.mjs             render app.js thật, kiểm tra header·model·API và đường copy
+
+SỬA LỖI KÈM THEO (phát hiện khi đổi màn hình chính):
+- Sheet "THỬ MODEL NÀY" đọc currentModel, nên khi mở từ sheet hành động của một model thì
+  chạy nhầm model lần trước (hoặc không chạy gì). Nay sheet ghi lại đúng URL + model của nó.
+- Sheet "QUÉT NHIỀU MODEL" suy ra URL cần quét từ URL đang mở, không phải URL mà sheet đang hiển thị.
+  Nay ghi lại URL khi mở sheet.
+- Nút "Huỷ" cạnh QUÉT TẤT CẢ URL hiện ra cả khi không quét gì: thuộc tính `hidden` của
+  trình duyệt bị luật `button { display: inline-flex }` đè. Nay có `[hidden] { display: none !important }`.
+- "khoá tất cả" khoá được nhưng "mở khoá tất cả" không bao giờ tới được: nút được dùng lại giữa các
+  lần vẽ, mà nhãn + hành động lại chốt sẵn lúc tạo nút — nên sau khi khoá hết, nút vẫn ghi "khoá tất cả"
+  và mọi lần bấm sau chỉ khoá lại. Nay trạng thái được đọc ngay lúc bấm và nút được vẽ lại mỗi lần
+  dùng lại (áp dụng chung cho cả `lockAllUrls` và `lockAllKeys`).
+
+PROVIDERS IMPLEMENTED:
+- Built-in: OpenRouter, OpenCode Zen, NVIDIA Build, Groq, Cerebras, Google AI Studio,
+  Mistral, DeepSeek, xAI Grok, Z.AI (GLM), Together AI, Hyperbolic, GitHub Models,
+  Novita AI, SambaNova, Chutes, DeepInfra, AI/ML API, Vercel AI Gateway, OpenAI, ...
+  (22 URL built-in + URL tự thêm)
+- Custom OpenAI-compatible qua dialog "+ URL".
+
+SCANNER RESULTS:
+- Quét chỉ đọc catalog (GET /models), không inference, không tốn token.
+- URL không công bố /models vẫn được lưu; có thể thêm model thủ công.
+- Cache TTL + quét lại thủ công; model biến mất chỉ bị đánh NOT_SEEN, không tự xoá.
+
+FREE DETECTOR:
+- Bốn mức giữ nguyên (FREE_VERIFIED / FREE_LIKELY / FREE_UNKNOWN / PAID), chỉ đổi cái gì được hiện:
+  0đ  = giá công bố 0 HOẶC tên có chữ free   (mặc định)
+  Chắc 0đ = chỉ model nhà cung cấp công bố giá 0
+  Chưa rõ giá = model không giá, tên không gợi ý — đang ẩn, có chip riêng để mở lại
+  PAID = không chip nào chạm tới, không bao giờ xuất hiện
+- Lượt kiểm chứng trên mock: 6 model hiện (4 giá 0 + 2 tên free), 2 model chưa rõ giá bị ẩn và
+  đếm rõ trên appbar ("2 chưa rõ giá ẩn"), model có giá không lọt vào danh sách.
+
+KEY VERIFIER:
+- FIRST SUCCESS → STOP: key khỏe thường tốn đúng 1 request (đã đo: 1 request trong lượt kiểm chứng).
+- Lỗi phân loại: 401 key sai, 402/„quota" hết hạn mức, 429 rate-limit, 403 MODEL_DENIED,
+  404 MODEL_UNAVAILABLE, timeout/temp — mock có key bad-/quota-/rate- để xem từng trạng thái.
+- Không log key đầy đủ; UI hiện dạng che (toke…orks).
+
+ROUTER:
+- FREE_ONLY; quay vòng KEY → KEY kế → hết key → MODEL kế → PROVIDER kế.
+- Cooldown theo Retry-After hoặc backoff có trần; circuit breaker ba trạng thái; khoá theo 3 tầng.
+
+TÌM & PHÂN LOẠI URL (yêu cầu mới nhất):
+- Ô "Tìm URL..." trong ngăn kéo: lọc danh sách URL theo tên hoặc địa chỉ (base URL), có nút × để xoá.
+  Ô này CHỈ lọc ngăn kéo — danh sách model 0đ ở màn hình chính không bị đụng tới.
+- Nút phân loại URL: "Tất cả" · "Không cần key" · "Cần key". Hai lớp đúng như yêu cầu
+  (cần key / không cần key); bấm lại nút đang bật = trả về "Tất cả".
+  URL "chưa kiểm tra" không có nút riêng vì đó là khe chưa quét, không phải một loại URL — vẫn về được bằng "Tất cả".
+- Nút "0đ ↓" xếp URL nhiều model 0đ trước (đồng bộ hai chiều với ô "Xếp" trong ngăn kéo,
+  không thành hai cài đặt nói hai điều khác nhau).
+- Khi đang lọc (có từ khoá hoặc đã chọn lớp) thì tắt kéo-thả trong ngăn kéo: thứ tự được ghi lại
+  từ các dòng đang vẽ, nên kéo lúc bị lọc sẽ lưu một thứ tự mất dấu các URL đang ẩn.
+  Dòng gợi ý dưới danh sách đổi theo trạng thái đó ("Đang lọc URL · ... để kéo sắp xếp lại").
+- Đã bỏ dải chú thích màu trong ngăn kéo ("Chắc 0đ / Có thể 0đ / Chưa rõ / Có phí" + 4 chấm màu):
+  dòng URL không còn vẽ chấm màu nào, nó nói bằng chữ ("quét ngay" / "cần key" / "chưa thử").
+
+MÀN HÌNH (mục đích người dùng yêu cầu):
+- Một danh sách phẳng mọi URL → model → API, mỗi phần là một nút copy:
+  bấm header URL → chép URL, bấm dòng model → chép model id, bấm chip API → hiện + chép key.
+- Header URL dính dưới appbar nên URL luôn trong tầm mắt khi cuộn.
+- Menu ⋮ của mỗi URL giữ đủ: quét lại, quét nhiều model, thêm API, thêm model, đổi cách quay vòng,
+  khoá model của URL, xoá cấu hình riêng, mở website, chép base URL.
+- Nhấn giữ dòng vẫn mở sheet hành động; kéo-thả vẫn sắp xếp trong từng URL.
+
+TEST RESULTS:
+- npm test        293/293 PASS   (exit 0; thêm UI53 tìm URL, UI54 phân loại URL, UI55 xếp theo số model 0đ,
+                  UI56 khoá tất cả ↔ mở khoá tất cả)
+- npm run uicheck PASS           (exit 0; render app.js thật, 0 dòng "LOI")
+- node --check app.js SYNTAX OK
+- Browser thật (http://localhost:8788) + mock provider: danh sách, chip, đo tốc độ, copy đều chạy;
+  gõ "mock" vào ô tìm URL → chỉ còn Mock 0đ; bấm "Cần key" → chỉ nhóm CẦN API KEY;
+  bấm "0đ ↓" → URL nhiều model 0đ lên đầu và ô "Xếp" đổi theo; console không có lỗi.
+
+BUILD RESULT:
+Không có bước build (web tĩnh). Shell đã đổi nên sw.js bump lên fmh-v15 và index.html ?v=12.
+
+HOW TO RUN:
+  npm start                 # UI: http://localhost:8788
+  npm run mock              # provider giả lập: http://localhost:8799/v1
+Thêm URL http://localhost:8799/v1 vào app (dialog "+ URL"), dán một key bất kỳ rồi bấm quét.
+
+LOCAL URL:
+http://localhost:8788
+
+KNOWN ISSUES:
+- Model "chưa rõ giá" vẫn được gửi 1 request khi kiểm chứng (verifier coi FREE_UNKNOWN là ứng viên).
+  Đây là lựa chọn đã chốt ("ẩn khỏi danh sách, vẫn lưu"), nhưng nếu nhà cung cấp không công bố giá
+  thì không loại trừ được khả năng đó là bản tính phí. Muốn chặn hẳn thì cần một công tắc trong core/config.js.
+- Đã kiểm chứng đầu-cuối bằng mock provider, chưa bằng key thật của provider thật.
+- Cây làm việc còn ~20 file sửa chưa commit từ các lượt trước (không thuộc lượt này);
+  lượt này không commit gì.
+- Ô tìm URL và bộ lọc là trạng thái tạm của phiên (không lưu vào storage): mở lại app là về "Tất cả".
+  Đây là lựa chọn có chủ ý — một bộ lọc còn sót lại sẽ khiến người dùng tưởng mất URL.
+
+NEXT STEP:
+- Dùng key thật trên một URL thật để xác nhận đầu-cuối ngoài đời.
+- Nếu muốn: thêm công tắc chặn hẳn việc thử model không công bố giá.
+==================================================

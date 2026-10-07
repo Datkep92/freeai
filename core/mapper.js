@@ -22,31 +22,41 @@ export class Mapper {
   }
 
   async list(providerId = null) {
-    const all = await this.storage.list('mappings');
-    return providerId ? all.filter((m) => m.providerId === providerId) : all;
+    return providerId
+      ? this.storage.findMany('mappings', { where: { providerId } })
+      : this.storage.list('mappings');
   }
 
   async get(id) {
     return this.storage.get('mappings', id);
   }
 
+  /**
+   * The verdict for one triple.
+   *
+   * `by_identity` is unique, so this is one lookup instead of a scan of every
+   * mapping on the machine - and it is called once per probe, so it sits in the
+   * hot path of the verifier and the router.
+   */
   async find(providerId, modelId, keyId) {
-    const all = await this.list(providerId);
-    return all.find((m) => m.modelId === modelId && m.keyId === keyId) ?? null;
+    return this.storage.find('mappings', { identity: mappingIdentity(providerId, modelId, keyId) });
   }
 
-  /** Accepts a bare provider id or a filter object. */
+  /**
+   * Accepts a bare provider id or a filter object.
+   *
+   * Each field of the filter is an index column, so the whole filter is one
+   * query rather than a read of every verdict followed by a JavaScript filter.
+   */
   async filter(query = null) {
-    const all = await this.list();
-    if (!query) return all;
-    if (typeof query === 'string') return all.filter((m) => m.providerId === query);
-    return all.filter((m) => {
-      if (query.providerId && m.providerId !== query.providerId) return false;
-      if (query.keyId && m.keyId !== query.keyId) return false;
-      if (query.modelId && m.modelId !== query.modelId) return false;
-      if (query.status && m.status !== query.status) return false;
-      return true;
-    });
+    if (!query) return this.list();
+    if (typeof query === 'string') return this.list(query);
+    const where = {};
+    for (const field of ['providerId', 'keyId', 'modelId', 'status']) {
+      if (query[field]) where[field] = query[field];
+    }
+    if (Object.keys(where).length === 0) return this.list();
+    return this.storage.findMany('mappings', { where });
   }
 
   async upsert({ providerId, modelId, keyId }) {
@@ -106,7 +116,16 @@ export class Mapper {
     return this.update(mappingId, { cooldownUntil: null });
   }
 
-  /** Drop mappings whose model or key no longer exists. */
+  /**
+   * Drop mappings whose model or key no longer exists.
+   *
+   * A verdict about a model or a key that is gone can never be acted on, and it
+   * still counts towards the health list the user reads to decide what to fix.
+   *
+   * The surviving identities are read once and the dead rows are deleted in one
+   * batch, rather than one transaction per orphan - a registry that lost a
+   * hundred keys would otherwise open a hundred write transactions here.
+   */
   async pruneOrphans() {
     const [mappings, keys, models] = await Promise.all([
       this.storage.list('mappings'),
@@ -116,16 +135,12 @@ export class Mapper {
     const keyIds = new Set(keys.map((k) => k.id));
     const modelKeys = new Set(models.map((m) => `${m.providerId}::${m.modelId}`));
 
-    let removed = 0;
-    for (const mapping of mappings) {
-      const alive =
-        keyIds.has(mapping.keyId) && modelKeys.has(`${mapping.providerId}::${mapping.modelId}`);
-      if (!alive) {
-        await this.storage.remove('mappings', mapping.id);
-        removed += 1;
-      }
-    }
-    return removed;
+    const orphans = mappings.filter(
+      (m) => !keyIds.has(m.keyId) || !modelKeys.has(`${m.providerId}::${m.modelId}`)
+    );
+    if (!orphans.length) return 0;
+    await this.storage.removeMany('mappings', orphans.map((m) => m.id));
+    return orphans.length;
   }
 }
 

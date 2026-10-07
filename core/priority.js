@@ -81,6 +81,18 @@ export function defaultPriority() {
   };
 }
 
+/**
+ * Read a settings row that was written flat, before `value` existed.
+ *
+ * Only the fields this module owns are taken. `id` and `updatedAt` are the
+ * envelope's, and `value` is ignored, so a half-migrated row cannot produce a
+ * payload made of its own envelope.
+ */
+function legacySettingsOf(row) {
+  const { id, value, updatedAt, ...rest } = row ?? {};
+  return rest;
+}
+
 /** Per-URL settings. Absent keys mean "fall back to the global setting". */
 export function defaultUrlPriority() {
   return {
@@ -96,8 +108,14 @@ export class Priority {
   }
 
   async load() {
-    const stored = await this.storage.get('settings', SETTINGS_ID);
-    if (!stored) return defaultPriority();
+    const row = await this.storage.get('settings', SETTINGS_ID);
+    if (!row) return defaultPriority();
+
+    // The payload lives under `value`, which is the shape the schema declares for
+    // this key/value store. A row written before that, or by hand, has the
+    // fields on the row itself, so both are read - otherwise the user's lock list
+    // would silently disappear after an update.
+    const stored = row.value && Object.keys(row.value).length ? row.value : legacySettingsOf(row);
 
     // Merged per scope: a hand-edited or older row must not leave a scope
     // undefined and crash a sort.
@@ -105,15 +123,23 @@ export class Priority {
     return {
       ...base,
       ...stored,
+      id: SETTINGS_ID,
       skipped: { ...base.skipped, ...(stored.skipped ?? {}) },
       order: { ...base.order, ...(stored.order ?? {}) },
     };
   }
 
   async save(state) {
-    const row = { ...state, updatedAt: new Date().toISOString() };
+    const { id, updatedAt: _ignored, ...value } = state;
+    const row = {
+      id: SETTINGS_ID,
+      value,
+      updatedAt: new Date().toISOString(),
+    };
     await this.storage.put('settings', row);
-    return row;
+    // The caller gets the state it saved, not the envelope, so a caller that
+    // writes and then reads its own return value sees what it expects.
+    return { ...state, updatedAt: row.updatedAt };
   }
 
   /**

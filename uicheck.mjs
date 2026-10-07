@@ -76,7 +76,7 @@ class El {
   close(){ this.open = false; }
 }
 const registry = new Map();
-for (const id of ['btnScanAll','btnAddUrl','btnAddModel','btnCancel','searchBox','treeRoot','keysRoot','healthRoot','logRoot','toast','filterCount','paneKeys','paneHealth','paneLog','modelDialog','modelTitle','modelHint','boxUrl','boxModel','keyRows','keyCount','btnCheckOne','btnAddKey','modelClose','keyDialog','keyHint','keySecret','keyConfirm','keyCancel','delDialog','delHint','delSecret','delConfirm','delRestore','delCancel','addUrlDialog','urlName','urlBase','urlConfirm','urlCancel','modelAddDialog','manualHint','manualModel','manualFree','manualConfirm','manualCancel','sidebar','sidebarRoot','btnMenu','scrim','btnAddUrlSide','treeTitle','btnAddKeyUrl','lockAllUrls','lockAllKeys','modelInfo']) {
+for (const id of ['btnScanAll','btnAddUrl','appbarAddUrl','btnCancel','searchBox','treeRoot','keysRoot','healthRoot','logRoot','toast','filterCount','paneKeys','paneHealth','paneLog','modelDialog','modelTitle','modelHint','boxUrl','boxModel','keyRows','keyCount','btnCheckOne','btnAddKey','modelClose','keyDialog','keyHint','keySecret','keyConfirm','keyCancel','delDialog','delHint','delSecret','delConfirm','delRestore','delCancel','addUrlDialog','urlName','urlBase','urlConfirm','urlCancel','modelAddDialog','manualHint','manualModel','manualFree','manualConfirm','manualCancel','sidebar','sidebarRoot','btnMenu','scrim','treeTitle','lockAllUrls','lockAllKeys','modelInfo','btnTestModel','urlSearch','urlSearchClear','urlClass','urlSortFree','sideHint','btnBulk','bulkDialog','bulkRows','bulkRun','bulkKey','bulkLimit','bulkEstimate','bulkProgress','testDialog','testKey','testModel','testUrl','testRun','testResult','rowMenu','rowMenuTitle','rowMenuSub','rowMenuActions','rowMenuCancel']) {
   registry.set(id, new El());
 }
 globalThis.document = {
@@ -108,9 +108,15 @@ const kid = (row, cls) => row?.children.find((c) => has(c, cls));
 const tree = registry.get('treeRoot');
 console.log('render() chay khong loi');
 
-// The main list waits for a URL, so tap the drawer entry first - same as a person.
-// The drawer row is a container: the tap target sits inside it, so the name has
-// to be read from the nested open button rather than from the row itself.
+// Copy is what the flat list is for, so every copy is recorded: a claim that a
+// tap copies something is only worth reading if it was observed.
+const copied = [];
+globalThis.navigator.clipboard.writeText = async (text) => { copied.push(text); };
+
+// The drawer is still where a URL is jumped to and configured. The main list no
+// longer waits for that - it draws every URL at once - so this is a jump, not a
+// selection. The drawer row is a container: the tap target sits inside it, so
+// the name is read from the nested open button rather than from the row itself.
 const drawerChildren = registry.get('sidebarRoot').children;
 const drawerItems = drawerChildren.filter((c) => has(c, 'urlitem'));
 console.log(
@@ -141,7 +147,7 @@ if (!gateway) throw new Error('drawer khong co muc Gateway');
 const gatewayOpen = kid(gateway, 'urlopen');
 gatewayOpen._listeners.click.forEach((fn) => fn());
 await new Promise((r) => setTimeout(r, 600));
-console.log('URL da mo:', registry.get('treeTitle').textContent);
+console.log('tieu de:', registry.get('treeTitle').textContent);
 
 function modelName(row) {
   // By class, not by position: the row now carries a facts line under the name.
@@ -150,11 +156,36 @@ function modelName(row) {
   return (mid ?? open)?.children.find((c) => c.className === 'name')?.textContent ?? '';
 }
 
-const group = tree.children.find((c) => c.className === 'group');
+// One block per URL: the sticky header carrying the URL, then that URL's rows.
+const blocks = tree.children.filter((c) => has(c, 'urlblock'));
+console.log('so khoi URL tren man hinh:', blocks.length);
+const blockOf = (fragment) =>
+  blocks.find((b) =>
+    (kid(kid(b, 'urlhead'), 'urlcopy')?.children ?? []).some((c) => c.textContent === fragment)
+  );
+const gatewayBlock = blockOf('https://gw.test/v1');
+if (!gatewayBlock) throw new Error('khong co khoi URL cua Gateway');
+
+// The header is the copy target for the URL, and the only place the URL is
+// written on this screen.
+const headerCopy = kid(kid(gatewayBlock, 'urlhead'), 'urlcopy');
+console.log(
+  'header URL:',
+  (headerCopy?.children ?? []).map((c) => c.textContent).join(' / ')
+);
+const beforeHeader = copied.length;
+headerCopy._listeners.click.forEach((fn) => fn());
+await new Promise((r) => setTimeout(r, 60));
+console.log(
+  'bam header -> chep URL:',
+  copied.slice(beforeHeader).includes('https://gw.test/v1') ? 'OK' : 'LOI'
+);
+
+const group = kid(gatewayBlock, 'group');
 const modelRows = (group?.children ?? []).filter((c) => c.className === 'model');
 console.log('so dong model render ra:', modelRows.length);
 console.log('bo loc:', registry.get('filterCount').textContent);
-console.log('co model bi phi thu phí khong:', modelRows.some((r) => r.children[1]?.textContent === 'paid-model'));
+console.log('co model bi phi thu phí khong:', modelRows.some((r) => modelName(r) === 'paid-model'));
 console.log('ten model:', modelRows.map(modelName).filter(Boolean).join(', '));
 
 // The published facts, on the row and in the dialog.
@@ -183,10 +214,38 @@ console.log(
 );
 console.log('toc do:', modelRows.map((r) => kid(kid(r, 'modelopen'), 'speed')?.textContent).join(' | '));
 
-// Drive the tap on the first model row.
+// The row is the copy target now; the ⓘ beside it opens the card. Both are
+// driven, because both are what a person does with this screen.
 if (!modelRows.length) throw new Error('khong co model free nao de bam');
-modelRows[0].children.find((c) => c.className === 'modelopen')._listeners.click.forEach((fn) => fn());
-await new Promise((r) => setTimeout(r, 100));
+const firstRow = modelRows[0];
+const firstId = modelName(firstRow);
+const beforeRow = copied.length;
+kid(firstRow, 'modelopen')._listeners.click.forEach((fn) => fn());
+await new Promise((r) => setTimeout(r, 80));
+console.log(
+  'bam dong model -> chep:',
+  copied.slice(beforeRow).join(', ')
+);
+console.log(
+  'chep dung model id:',
+  copied.includes(firstId) ? `OK (${firstId})` : `LOI (mong doi ${firstId})`
+);
+
+// The URL's APIs, on the row, masked - the third thing this screen is for.
+const apiChips = kid(firstRow, 'apichips')?.children ?? [];
+console.log(
+  'API tren dong model:',
+  apiChips.map((c) => c.children[1]?.textContent ?? '').join(' | ') || '(khong co)'
+);
+console.log(
+  'lo secret tren dong:',
+  apiChips.some((c) => (c.children ?? []).some((x) => [KEY_A, KEY_B].includes(x.textContent)))
+    ? 'LOI: co'
+    : 'khong'
+);
+
+kid(firstRow, 'iconbtn')._listeners.click.forEach((fn) => fn());
+await new Promise((r) => setTimeout(r, 120));
 
 console.log('');
 console.log('--- sau khi bam model ---');

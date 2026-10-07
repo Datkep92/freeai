@@ -8,6 +8,7 @@ import { Scanner } from '../core/scanner.js';
 import { Mapper } from '../core/mapper.js';
 import { detectFree, FREE, orderModelsForVerify } from '../core/free-detector.js';
 import { createMockFetch } from './mock-fetch.js';
+import { normalizeWebsiteUrl } from '../core/provider-registry.js';
 import { BUILTIN_LIST } from '../core/adapters/builtin.js';
 
 // Synthetic fixtures only. Never valid credentials.
@@ -161,6 +162,23 @@ export function registerCoreCases() {
       const { provider, created } = await pr.upsert({ name: 'Dead', baseURL: 'https://dead.test/v1' });
       assert(created, 'stored before any discovery attempt');
       assert(provider, 'row exists for the user to add manual models to');
+    });
+
+    it('PR3b: a website URL is normalized or rejected, never trusted raw', async () => {
+      const s = new MemoryStorage();
+      const pr = new ProviderRegistry(s);
+      const { provider } = await pr.upsert({
+        name: 'Docs',
+        baseURL: 'https://docs.test/v1',
+        websiteURL: 'docs.test',
+      });
+      assertEqual(provider.websiteURL, null, 'only http(s) is usable for opening a tab');
+      const second = await pr.upsert({
+        name: 'Docs trailing',
+        baseURL: 'https://trailing.test/v1',
+        websiteURL: 'https://trailing.test/docs',
+      });
+      assertEqual(second.provider.websiteURL, 'https://trailing.test/docs');
     });
 
     it('PR4: removing a provider removes everything under it', async () => {

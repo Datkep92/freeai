@@ -181,16 +181,20 @@ export class MetricsRegistry {
     return row ?? null;
   }
 
-  /** Read metrics for many models at once, keyed by identity. */
+  /**
+   * Read metrics for many models at once, keyed by identity.
+   *
+   * One read for the whole store rather than one per model. The router calls this
+   * on every request to rank candidates, so a per-model read would make the
+   * ranking cost one IndexedDB round trip per model on screen.
+   */
   async mapFor(models) {
     const rows = await this.storage.list('metrics');
     const byIdentity = new Map(rows.map((r) => [r.identity, r]));
     const out = new Map();
     for (const model of models) {
-      out.set(
-        MetricsRegistry.identity(model.providerId, model.modelId),
-        byIdentity.get(MetricsRegistry.identity(model.providerId, model.modelId)) ?? emptyMetrics()
-      );
+      const identity = MetricsRegistry.identity(model.providerId, model.modelId);
+      out.set(identity, byIdentity.get(identity) ?? emptyMetrics());
     }
     return out;
   }
@@ -218,13 +222,10 @@ export class MetricsRegistry {
   }
 
   async removeForProvider(providerId) {
-    const rows = await this.storage.list('metrics');
-    let removed = 0;
-    for (const row of rows.filter((r) => r.providerId === providerId)) {
-      await this.storage.remove('metrics', row.id);
-      removed += 1;
-    }
-    return removed;
+    const rows = await this.storage.findMany('metrics', { where: { providerId } });
+    if (!rows.length) return 0;
+    await this.storage.removeMany('metrics', rows.map((r) => r.id));
+    return rows.length;
   }
 
   /** Drop rows whose model no longer exists. */

@@ -31,7 +31,13 @@ const DOM_IDS = [
   'addUrlDialog', 'urlName', 'urlBase', 'urlConfirm', 'urlCancel',
   'modelAddDialog', 'manualHint', 'manualModel', 'manualFree', 'manualConfirm', 'manualCancel',
   'sidebar', 'sidebarRoot', 'btnMenu', 'scrim', 'btnAddUrl', 'treeTitle', 'urlSort',
-  'btnAddKeyUrl', 'lockAllUrls', 'lockAllKeys',
+  'urlSearch', 'urlSearchClear', 'urlClass', 'urlSortFree', 'sideHint',
+  'btnAddKeyUrl', 'lockAllUrls', 'lockAllKeys', 'btnTestModel',
+  'testDialog', 'testHint', 'testClose', 'testUrl', 'testModel', 'testKey',
+  'testPrompt', 'testResult', 'testRun', 'btnBulk',
+  'bulkDialog', 'bulkHint', 'bulkClose', 'bulkUrl', 'bulkKey', 'bulkLimit',
+  'bulkCap', 'bulkEstimate', 'bulkRows', 'bulkProgress', 'bulkRun',
+  'bulkStop', 'bulkDismiss',
   'rowMenu', 'rowMenuTitle', 'rowMenuSub', 'rowMenuActions', 'rowMenuCancel',
 ];
 
@@ -76,7 +82,10 @@ class El {
     this.dataset = {};
     this.style = {};
     this.className = '';
-    this.value = '';
+    // A real <select> with no explicit value reports the first option's value.
+    // A stub that always answers '' makes every picker look empty and silently
+    // skips the code path the test was written to reach.
+    this._value = '';
     this.hidden = false;
     this.open = false;
     this._listeners = {};
@@ -97,6 +106,13 @@ class El {
       contains: (name) => this._classes.has(name),
     };
   }
+  get value() {
+    if (this._value !== '') return this._value;
+    const first = this.tag === 'select' ? this.children.find((c) => c.tag === 'option') : null;
+    return first ? (first.value ?? '') : '';
+  }
+  set value(v) { this._value = v == null ? '' : String(v); }
+
   get className() { return [...this._classes].join(' '); }
   set className(v) {
     this._classes = new Set(String(v).split(/\s+/).filter(Boolean));
@@ -274,6 +290,7 @@ function installDom() {
   // the test that checks two sheets never stack passes for the wrong reason.
   const DIALOG_IDS = new Set([
     'modelDialog', 'keyDialog', 'delDialog', 'addUrlDialog', 'modelAddDialog', 'rowMenu',
+    'testDialog', 'bulkDialog',
   ]);
   const nodes = new Map(
     DOM_IDS.map((id) => [id, new El(DIALOG_IDS.has(id) ? 'dialog' : 'div')])
@@ -281,6 +298,7 @@ function installDom() {
   // Every node the page owns, so a test can reach a control that only exists in
   // the markup - the filter chips, the tab bar - without going through the map.
   globalThis.__allChips = [];
+  globalThis.__allClasses = [];
   globalThis.document = {
     getElementById: (id) => nodes.get(id) ?? new El(),
     createElement: (tag) => new El(tag),
@@ -319,17 +337,33 @@ function installDom() {
     nodes.set('tabbar-' + target, btn);
   }
 
-  // The filter chips, for the same reason and with the same shape index.html
-  // gives them: the app counts each level by walking the chips, so a stub with
-  // no chips would let that whole path pass untested.
-  for (const level of ['all', 'verified', 'likely', 'unknown']) {
+  // The filter chips, with the names index.html actually ships. The app reads
+  // `dataset.filter` and looks the name up in its own filter table, so a stub
+  // inventing names would either crash that lookup or quietly stop exercising
+  // it - and the chip set is the thing the tests below are about.
+  // Everything about a chip comes out of the markup: its filter name, whether it
+  // starts selected, and whether it carries a counter. Hardcoding "all" as the
+  // selected one made the stub disagree with the page the moment the default chip
+  // was renamed, and a chip the app never marked would look unselected while the
+  // app believed otherwise.
+  const chipBlocks = [...htmlSource.matchAll(/<button[^>]*data-filter="([^"]+)"[\s\S]*?<\/button>/g)];
+  const declared = chipBlocks.map((m) => ({
+    level: m[1],
+    on: /\bclass="[^"]*\bon\b/.test(m[0]),
+    count: m[0].includes('chip-count'),
+  }));
+  for (const { level, on, count: hasCount } of declared.length
+    ? declared
+    : [{ level: 'free', on: true, count: true }]) {
     const chip = new El('button');
-    chip.className = level === 'all' ? 'chip on' : 'chip';
+    chip.className = on ? 'chip on' : 'chip';
     chip.dataset.filter = level;
     const label = new El('span');
     label.className = 'chip-label';
     chip.append(label);
-    if (level !== 'all') {
+    // The app skips a chip with no counter slot, so the stub has to match the
+    // markup or the counting path goes untested.
+    if (hasCount) {
       const count = new El('span');
       count.className = 'chip-count';
       chip.append(count);
@@ -338,6 +372,19 @@ function installDom() {
   }
   // Attached to the body so queryStub walks them like any other markup.
   globalThis.document.body.append(...globalThis.__allChips);
+
+  // The URL classification buttons, built from the markup for the same reason
+  // as the chips: the class name, the selected state and which class a button
+  // stands for all come out of index.html, so the stub cannot pass a suite while
+  // the page it is standing in for has drifted somewhere else.
+  const classBlocks = [...htmlSource.matchAll(/<button[^>]*data-urlclass="([^"]+)"[^>]*>/g)];
+  for (const m of classBlocks) {
+    const btn = new El('button');
+    btn.className = /\bclass="[^"]*\bon\b/.test(m[0]) ? 'classbtn on' : 'classbtn';
+    btn.dataset.urlclass = m[1];
+    globalThis.__allClasses.push(btn);
+  }
+  globalThis.document.body.append(...globalThis.__allClasses);
 
   // Static markup is not rebuilt here, so the attributes a control ships with in
   // index.html - aria-expanded, role, value on a select - have to come from the
@@ -392,6 +439,43 @@ async function seed() {
   return { storage, provider, models, keys };
 }
 
+/**
+ * Add a model that is free by name and publishes no price.
+ *
+ * Deliberately separate from `seed`, because most cases count the seeded models
+ * and this one changes the count. It is the only kind of model that separates
+ * "is free" from "is priced at zero", so the chip cases need it and the rest do
+ * not.
+ */
+async function seedNameOnlyModel() {
+  const storage = storageRef;
+  const provider = (await storage.list('providers'))[0];
+  await new ModelRegistry(storage).upsertDiscovered({
+    providerId: provider.id, modelId: 'name-only-free',
+  });
+  globalThis.__FMH_SEED__.models.push(
+    ...(await storage.findMany('models', { where: { modelId: 'name-only-free' } }))
+  );
+}
+
+/**
+ * Add a model with no published price and no hint in its name.
+ *
+ * This is the one level the main list hides on purpose, so it is the only way to
+ * prove that hiding is not the same as discarding: the row has to stay reachable
+ * behind its own chip.
+ */
+async function seedUnknownModel() {
+  const storage = storageRef;
+  const provider = (await storage.list('providers'))[0];
+  await new ModelRegistry(storage).upsertDiscovered({
+    providerId: provider.id, modelId: 'bi-an-1',
+  });
+  globalThis.__FMH_SEED__.models.push(
+    ...(await storage.findMany('models', { where: { modelId: 'bi-an-1' } }))
+  );
+}
+
 
 
 /** Add a second URL with its own model, to prove the lists stay separate. */
@@ -436,11 +520,62 @@ async function openUrlInDrawer(nodes, nameContains) {
   return target;
 }
 
-/** The model rows currently shown in the main list. */
+/**
+ * The URL blocks of the main list.
+ *
+ * The list is flat and holds every URL at once, so one URL stays readable as a
+ * block: a sticky header with the URL, then that URL's group of model rows.
+ * Every lookup below goes through these helpers, so a change to the nesting
+ * cannot leave one case reading the old shape while another reads the new one.
+ */
+function urlBlocksOf(nodes) {
+  return nodes.get('treeRoot').children.filter((c) => c.classList.contains('urlblock'));
+}
+
+/** The group of model rows inside one URL's block. */
+function modelGroupOf(block) {
+  return block?.children.find((c) => c.classList.contains('group'));
+}
+
+/** The first URL block, which is the one the drawer's first entry points at. */
+function firstBlock(nodes) {
+  return urlBlocksOf(nodes)[0];
+}
+
+/** The model rows of one URL block. */
+function rowsOfBlock(block) {
+  return (modelGroupOf(block)?.children ?? []).filter((c) => c.classList.contains('model'));
+}
+
+/** Every model row on screen, across every URL. */
 function modelRowsOf(nodes) {
-  return nodes.get('treeRoot').children
-    .filter((c) => c.classList.contains('group'))
-    .flatMap((g) => g.children.filter((c) => c.classList.contains('model')));
+  return urlBlocksOf(nodes).flatMap((block) => rowsOfBlock(block));
+}
+
+/** One URL's sticky header. */
+function blockHeaderOf(block) {
+  return block.children.find((c) => c.classList.contains('urlhead'));
+}
+
+/** The copy target on a URL header. */
+function blockCopyOf(block) {
+  return blockHeaderOf(block)?.children.find((c) => c.className === 'urlcopy');
+}
+
+/** The ⋮ on a URL header, which opens that URL's own menu. */
+function blockMenuOf(block) {
+  return blockHeaderOf(block)?.children.find((c) => c.className === 'iconbtn');
+}
+
+/**
+ * The block whose header mentions this fragment of a URL.
+ *
+ * The list is flat, so "the models of one URL" has to be said by finding that
+ * URL's block. Reading `modelRowsOf(nodes)[0]` would silently mean "the first
+ * block", which is whichever URL the rotation happens to put first.
+ */
+function blockWithUrl(nodes, fragment) {
+  return urlBlocksOf(nodes).find((b) => (blockCopyOf(b)?.textContent ?? '').includes(fragment));
 }
 
 /** Open a URL from its drawer row, the way the UI is used. */
@@ -592,8 +727,7 @@ async function longPressRow(row) {
 
 /** The model ids currently listed, in the order they appear on screen. */
 function modelIdsOnScreen(nodes) {
-  const group = nodes.get('treeRoot').children.find((c) => c.classList.contains('group'));
-  return (group?.children ?? []).filter((c) => c.classList.contains('model')).map((c) => c.dataset.sortId);
+  return rowsOfBlock(firstBlock(nodes)).map((c) => c.dataset.sortId);
 }
 
 /** Tap any control, the way a person taps it. */
@@ -601,10 +735,84 @@ async function tap(node) {
   for (const fn of node?._listeners?.click ?? []) await fn({ stopPropagation() {}, preventDefault() {} });
 }
 
-/** Click the row the way a person does: on the name, not on a control. */
+/**
+ * Open a model's card, the way a person does: on the ⓘ beside its row.
+ *
+ * Tapping the row itself copies the model id now, so the card is reached from
+ * the one control that is not the copy target - which is what the ⓘ is for.
+ */
 async function tapModel(row) {
-  const open = row.children.find((c) => c.className === 'modelopen') ?? row;
+  const info = row.children.find((c) => c.className === 'iconbtn');
+  if (info) {
+    for (const fn of info._listeners.click ?? []) await fn();
+    return;
+  }
+  await tapModelRow(row);
+}
+
+/** Tap the row itself. That is the copy target now, not the card. */
+async function tapModelRow(row) {
+  const open = modelOpenOf(row);
   for (const fn of open._listeners.click ?? []) await fn();
+}
+
+/** The API chips on a model row, in the order they are drawn. */
+function apiChipsOf(row) {
+  const box = row.children.find((c) => c.className === 'apichips');
+  return box?.children ?? [];
+}
+
+/**
+ * The URL classification buttons, as index.html ships them.
+ *
+ * Read from the same markup the stub builds its nodes from, so a class renamed
+ * on the page cannot leave a test tapping a button that no longer exists.
+ */
+function classButton(name) {
+  return globalThis.__allClasses.find((b) => b.dataset.urlclass === name);
+}
+
+/** Every URL name currently drawn in the drawer, in screen order. */
+function drawerNames(nodes) {
+  return nodes.get('sidebarRoot').children
+    .filter((c) => c.classList.contains('urlitem'))
+    .map(urlNameOf);
+}
+
+/** One drawer row by the name on it. */
+function drawerRow(nodes, name) {
+  return nodes
+    .get('sidebarRoot')
+    .children.find((c) => c.classList.contains('urlitem') && urlNameOf(c) === name);
+}
+
+/**
+ * Two URLs that a scan has already classified, one of each class.
+ *
+ * The verdict is what the classification buttons read, so a URL nobody has
+ * scanned cannot stand in for either side: it is "chưa kiểm tra", which has no
+ * button of its own and is only reachable through "Tất cả".
+ */
+async function seedClassifiedUrls() {
+  const providers = new ProviderRegistry(storageRef);
+  const models = new ModelRegistry(storageRef);
+
+  const { provider: open } = await providers.upsert({ name: 'Open Gate', baseURL: 'https://open.test/v1' });
+  await providers.update(open.id, { keyRequirement: 'NONE' });
+  await models.upsertDiscovered({
+    providerId: open.id, modelId: 'open-free',
+    pricing: { prompt: '0', completion: '0' },
+  });
+
+  const { provider: locked } = await providers.upsert({ name: 'Locked Gate', baseURL: 'https://locked.test/v1' });
+  await providers.update(locked.id, { keyRequirement: 'REQUIRED' });
+  await models.upsertDiscovered({
+    providerId: locked.id, modelId: 'locked-free',
+    pricing: { prompt: '0', completion: '0' },
+  });
+
+  globalThis.__FMH_SEED__.providers = await storageRef.list('providers');
+  globalThis.__FMH_SEED__.models = await storageRef.list('models');
 }
 
 /** Import app.js fresh and wait for its first render. */
@@ -636,6 +844,7 @@ async function rebootWithStoredData() {
 }
 
 const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+const htmlSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 
 /** The app's own storage, so a case can read what it actually wrote. */
 let storageRef = null;
@@ -716,32 +925,7 @@ export function registerUiCases() {
       }
     });
 
-    it('UI2: nothing is listed until a URL is chosen', async () => {
-      const nodes = installDom();
-      await seed();
-      globalThis.fetch = createMockFetch({
-        '/models': { body: { data: [] } },
-        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
-      });
-      await bootApp();
-
-      assertEqual(modelRowsOf(nodes).length, 0, 'the main list waits for a URL');
-      const hint = nodes.get('treeRoot').children.map((c) => c.textContent).join(' ');
-      assert(hint.includes('URL'), 'and it says so instead of looking broken');
-
-      await openUrlInDrawer(nodes, 'Gateway');
-      assertEqual(nodes.get('treeTitle').textContent, 'Gateway', 'the title shows which URL');
-      const shown = modelRowsOf(nodes).map(modelNameOf);
-      assertEqual(shown.length, 2, 'now its free models are listed');
-      assertEqual(shown.includes('paid-model'), false, 'the priced one stays out of the list');
-      assertEqual(
-        nodes.get('treeTitle').textContent.includes('Gateway'),
-        true,
-        'and the title still says which URL these belong to'
-      );
-    });
-
-    it('UI3: opening one URL shows only that URL models', async () => {
+    it('UI2: every URL is listed at once, and nothing has to be opened first', async () => {
       const nodes = installDom();
       await seed();
       await seedSecondUrl();
@@ -751,17 +935,49 @@ export function registerUiCases() {
       });
       await bootApp();
 
-      await openUrlInDrawer(nodes, 'Gateway');
-      const first = modelRowsOf(nodes).map(modelNameOf);
+      // No picker step. The first paint is the answer to "what can I use for
+      // nothing", across every URL the user owns.
+      const shown = modelRowsOf(nodes).map(modelNameOf);
+      assert(shown.length > 0, 'the list is drawn without opening anything first');
+      assertEqual(shown.includes('paid-model'), false, 'and the priced one is never in it');
+      assertEqual(
+        nodes.get('treeTitle').textContent,
+        'Tất cả model 0đ',
+        'the title says what the list is rather than which URL'
+      );
+
+      // Each URL keeps its own header, so a flat list can still say which URL a
+      // row belongs to.
+      const heads = urlBlocksOf(nodes).map((b) => blockCopyOf(b)?.textContent ?? '');
+      assert(
+        heads.some((h) => h.includes('https://gw.test/v1')),
+        'the Gateway URL is on its own header: ' + heads.join(' | ')
+      );
+      assert(
+        heads.some((h) => h.includes('https://other.test/v1')),
+        'and so is the second URL: ' + heads.join(' | ')
+      );
+    });
+
+    it('UI3: each URL keeps its own block, and no URL models leak into another', async () => {
+      const nodes = installDom();
+      await seed();
+      await seedSecondUrl();
+      globalThis.fetch = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      await bootApp();
+
+      const first = rowsOfBlock(blockWithUrl(nodes, 'gw.test')).map(modelNameOf);
       assertEqual(first.length, 2, 'the first URL has two free models');
 
-      await openUrlInDrawer(nodes, 'Other');
-      const second = modelRowsOf(nodes).map(modelNameOf);
+      const second = rowsOfBlock(blockWithUrl(nodes, 'other.test')).map(modelNameOf);
       assertEqual(second.length, 1, 'the second URL has one');
       assertEqual(second.includes('space-bunny-free'), false, "the other URL's models do not leak in");
     });
 
-    it('UI4a: each filter chip shows only its own certainty level', async () => {
+    it('UI4a: each filter chip narrows the list to its own claim', async () => {
       const nodes = installDom();
       await seed();
       globalThis.fetch = createMockFetch({
@@ -769,34 +985,64 @@ export function registerUiCases() {
         '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
       });
       await bootApp();
+
+      const chip = (level) => globalThis.__allChips.find((c) => c.dataset.filter === level);
+      const names = () => modelRowsOf(nodes).map(modelNameOf);
+
+      // Two free models and one priced one. Both free ones are priced at zero,
+      // which is the interesting case: a chip that only ever showed the
+      // zero-priced ones would pass a test written against these seeds.
+      assertEqual(names().length, 2, 'both free models are listed, the priced one is not');
+      assertEqual(chip('free').classList.contains('on'), true, 'and 0đ is the chip that is on');
+
+      await tap(chip('zero'));
+      await new Promise((r) => setTimeout(r, 200));
+      assertEqual(names().length, 2, 'chắc 0đ keeps both: their price is a published zero');
+      assertEqual(chip('zero').classList.contains('on'), true, 'and the chip shows it is on');
+
+      // The narrowest chip is the way back to the models nobody priced. It must
+      // not re-admit anything with a price.
+      await tap(chip('unknown'));
+      await new Promise((r) => setTimeout(r, 200));
+      assertEqual(names().length, 0, 'chưa rõ giá holds nothing here, and admits no priced model');
+      assertEqual(chip('unknown').classList.contains('on'), true, 'and the chip shows it is on');
+
+      await tap(chip('free'));
+      await new Promise((r) => setTimeout(r, 200));
+      assertEqual(names().length, 2, 'and 0đ brings both back');
+    });
+
+    it('UI4a2: a model that is free but not priced at zero leaves the 0$ chip', async () => {
+      // The two filters are not the same set, and the difference only shows on a
+      // model whose free status comes from something other than a price of zero.
+      // A chip wired to the same predicate as another would pass UI4a.
+      const nodes = installDom();
+      await seed();
+      await seedNameOnlyModel();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
       await openUrlInDrawer(nodes, 'Gateway');
 
       const chip = (level) => globalThis.__allChips.find((c) => c.dataset.filter === level);
       const names = () => modelRowsOf(nodes).map(modelNameOf);
 
-      // The two seeded models are both priced at zero, so they are both
-      // verified - which is the point: a chip that only ever shows verified
-      // models would pass every test here.
-      assertEqual(names().length, 2, 'both seeded models are listed under Tất cả');
-      assertEqual(chip('all').classList.contains('on'), true, 'and Tất cả is the one on');
+      assertEqual(names().length, 3, 'the name-only model is listed too');
+      assertEqual(
+        names().includes('name-only-free'), true,
+        'a model whose name says free is still a model the user can use'
+      );
 
-      await tap(chip('verified'));
+      await tap(chip('zero'));
       await new Promise((r) => setTimeout(r, 200));
-      assertEqual(names().length, 2, 'Chắc 0đ keeps both: their price is a published zero');
-      assertEqual(chip('verified').classList.contains('on'), true, 'and the chip shows it is on');
+      assertEqual(
+        names().includes('name-only-free'), false,
+        'but it has no published price of zero, so 0$ must not claim it'
+      );
+      assertEqual(names().length, 2);
 
-      await tap(chip('likely'));
+      await tap(chip('free'));
       await new Promise((r) => setTimeout(r, 200));
-      assertEqual(names().length, 0, 'Có thể 0đ is empty: nothing here is only a name hint');
-      assertEqual(chip('likely').classList.contains('on'), true, 'even when empty it is the one on');
-
-      await tap(chip('unknown'));
-      await new Promise((r) => setTimeout(r, 200));
-      assertEqual(names().length, 0, 'and Chưa rõ is empty too');
-
-      await tap(chip('all'));
-      await new Promise((r) => setTimeout(r, 200));
-      assertEqual(names().length, 2, 'Tất cả brings both back');
+      assertEqual(names().length, 3, 'and Tự quét 0đ still has it');
     });
 
     it('UI4b: every model lands in exactly one chip, and the counts add up', async () => {
@@ -812,17 +1058,44 @@ export function registerUiCases() {
         return slot.textContent;
       };
 
-      // The three narrow chips partition the free set: nothing is in two of
-      // them, nothing is in none. If a model ever fell out of all three it
-      // would simply disappear with no chip able to find it again.
-      assertEqual(countOf('verified'), '2', 'both verified');
-      assertEqual(countOf('likely'), '', 'an empty level shows no number at all');
-      assertEqual(countOf('unknown'), '', 'and neither does the other one');
-
-      const sum = ['verified', 'likely', 'unknown'].reduce(
-        (n, level) => n + Number(countOf(level) || 0), 0
+      // Every count is a subset of the free set, and the two chips overlap by
+      // design - a model priced at zero is both free and zero, so summing them
+      // is meaningless. What has to hold is that neither chip counts a paid
+      // model, and that the widest chip never reports fewer than the narrowest.
+      assertEqual(countOf('free'), '2', 'both models are free');
+      assertEqual(countOf('zero'), '2', 'and both are priced at zero');
+      assert(
+        Number(countOf('free')) >= Number(countOf('zero')),
+        'the free set cannot be smaller than the priced-at-zero subset of it'
       );
-      assertEqual(sum, 2, 'the three levels account for the whole free set, no overlap');
+
+      // There is no chip for paid models, and that is deliberate rather than an
+      // oversight: a "0đ" list that offered a paid row behind a filter would be
+      // offering money for nothing.
+      assert(
+        !globalThis.__allChips.some((c) => c.dataset.filter === 'paid'),
+        'no chip offers paid models'
+      );
+    });
+
+    it('UI4b2: a chip with nothing behind it shows no number', async () => {
+      const nodes = installDom();
+      await seed();
+      await seedNameOnlyModel();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+
+      const chip = (level) => globalThis.__allChips.find((c) => c.dataset.filter === level);
+      const countOf = (level) =>
+        chip(level).children.find((c) => c.classList.contains('chip-count')).textContent;
+
+      // The name-only model is free and has no published price, so it widens
+      // Tự quét 0đ to three while 0$ stays at the two models that actually
+      // publish a zero. The numbers have to move with the list, or the chips
+      // and the models on screen disagree.
+      assertEqual(countOf('free'), '3', 'all three are free');
+      assertEqual(countOf('zero'), '2', 'only the two that publish a price of zero');
     });
 
     it('UI4: a priced model is never listed, whatever the filter', async () => {
@@ -1009,7 +1282,7 @@ export function registerUiCases() {
       assertEqual(before.length, 2, 'two models to reorder');
 
       // Move the first row below the second one.
-      const group = nodes.get('treeRoot').children.find((c) => c.classList.contains('group'));
+      const group = modelGroupOf(firstBlock(nodes));
       const rows = group.children.filter((c) => c.classList.contains('model'));
       await dropOn(group, rows[0], rows[1], true);
       await new Promise((r) => setTimeout(r, 250));
@@ -1047,16 +1320,16 @@ export function registerUiCases() {
       await bootApp();
       await openUrlInDrawer(nodes, 'Gateway');
 
-      const group = nodes.get('treeRoot').children.find((c) => c.classList.contains('group'));
+      const group = modelGroupOf(blockWithUrl(nodes, 'gw.test'));
       const rows = group.children.filter((c) => c.classList.contains('model'));
       await dropOn(group, rows[0], rows[1], true);
       await new Promise((r) => setTimeout(r, 250));
 
-      // The same model ids exist on another URL, so a global order would
-      // reorder that URL's list too - which the user never asked for.
-      await openUrlInDrawer(nodes, 'Other');
-      const other = modelRowsOf(nodes).map(modelNameOf);
+      // A global order would reorder the other URL's list too, which the user
+      // never asked for: the same model id can exist on several URLs.
+      const other = rowsOfBlock(blockWithUrl(nodes, 'other.test')).map(modelNameOf);
       assertEqual(other.length, 1, 'the other URL still lists its own model');
+      assertEqual(other[0], 'other-free', 'and its order was not rewritten by the first URL');
     });
 
     it('UI11: dragging a URL reorders the drawer and survives a re-render', async () => {
@@ -1154,7 +1427,7 @@ export function registerUiCases() {
       await bootApp();
       await openUrlInDrawer(nodes, 'Gateway');
 
-      const group = nodes.get('treeRoot').children.find((c) => c.classList.contains('group'));
+      const group = modelGroupOf(firstBlock(nodes));
       const rows = group.children.filter((c) => c.classList.contains('model'));
       assertEqual(rows.length, 2, 'two models to reorder');
       const before = modelIdsOnScreen(nodes);
@@ -1179,7 +1452,7 @@ export function registerUiCases() {
       await bootApp();
       await openUrlInDrawer(nodes, 'Gateway');
 
-      const group = nodes.get('treeRoot').children.find((c) => c.classList.contains('group'));
+      const group = modelGroupOf(firstBlock(nodes));
       const rows = group.children.filter((c) => c.classList.contains('model'));
       const before = modelIdsOnScreen(nodes);
       await dragRow(rows[0], { fromY: 28, toY: 28 + ROW_HEIGHT_PX * 2 });
@@ -1210,7 +1483,7 @@ export function registerUiCases() {
       await bootApp();
       await openUrlInDrawer(nodes, 'Gateway');
 
-      const group = nodes.get('treeRoot').children.find((c) => c.classList.contains('group'));
+      const group = modelGroupOf(firstBlock(nodes));
       const rows = group.children.filter((c) => c.classList.contains('model'));
       const before = modelIdsOnScreen(nodes);
 
@@ -1232,7 +1505,7 @@ export function registerUiCases() {
       await bootApp();
       await openUrlInDrawer(nodes, 'Gateway');
 
-      const group = nodes.get('treeRoot').children.find((c) => c.classList.contains('group'));
+      const group = modelGroupOf(firstBlock(nodes));
       const rows = group.children.filter((c) => c.classList.contains('model'));
       await dragRow(rows[0], { fromY: 28, toY: 28 + ROW_HEIGHT_PX * 2 });
 
@@ -1711,6 +1984,277 @@ export function registerUiCases() {
       }
     });
 
+    it('UI38: the manual test names the URL, the model and the key before it runs', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tapModel(modelRowsOf(nodes)[0]);
+
+      await tap(nodes.get('btnTestModel'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      assertEqual(nodes.get('testDialog').open, true, 'the test sheet opened');
+      // All three parts of the call are on screen before it is made. A test whose
+      // target is only visible afterwards cannot be trusted when it fails.
+      assertEqual(nodes.get('testUrl').textContent, 'https://gw.test/v1', 'the URL is shown');
+      assertEqual(
+        nodes.get('testModel').textContent,
+        modelRowsOf(nodes).map(modelNameOf)[0],
+        'and the model that was tapped'
+      );
+      assertEqual(nodes.get('testResult').textContent.includes('Chưa chạy'), true, 'and nothing has run yet');
+
+      // Both keys of the URL are offered, each with its status, so picking
+      // between two masked keys is not guesswork.
+      const options = nodes.get('testKey').children;
+      assertEqual(options.length, 2, 'both keys of the URL are listed');
+      assert(options[0].textContent.includes('oc_s'), 'each showing its masked form: ' + options[0].textContent);
+    });
+
+    it('UI39: running the test sends one request naming that exact model', async () => {
+      const nodes = installDom();
+      await seed();
+      const mock = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      globalThis.fetch = mock;
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tapModel(modelRowsOf(nodes)[0]);
+
+      const wanted = modelRowsOf(nodes).map(modelNameOf)[0];
+      await tap(nodes.get('btnTestModel'));
+      await new Promise((r) => setTimeout(r, 200));
+      mock.reset();
+
+      await tap(nodes.get('testRun'));
+      await new Promise((r) => setTimeout(r, 400));
+
+      const sent = mock.calls.filter((c) => c.url.includes('/chat/completions'));
+      assertEqual(sent.length, 1, 'exactly one request: a manual test must not retry');
+      assertEqual(
+        JSON.parse(sent[0].body).model,
+        wanted,
+        'and it names the model that was tapped, not the first one on the URL'
+      );
+      assertEqual(
+        nodes.get('testResult').className.includes('testresult-ok'),
+        true,
+        'the result reads as healthy'
+      );
+      assert(
+        nodes.get('testResult').textContent.includes('Khỏe'),
+        'and says so in words, not only in colour: ' + nodes.get('testResult').textContent
+      );
+    });
+
+    it('UI40: a manual test writes nothing to the key or the model', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tapModel(modelRowsOf(nodes)[0]);
+      await tap(nodes.get('btnTestModel'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      const before = await storageRef.list('keys');
+      await tap(nodes.get('testRun'));
+      await new Promise((r) => setTimeout(r, 400));
+      const after = await storageRef.list('keys');
+
+      // A manual test is a question, not a verdict. Overwriting a key's status
+      // from one hand-typed prompt would make the health list claim something
+      // the app does not actually know.
+      assertEqual(
+        after.map((k) => k.status).join(','),
+        before.map((k) => k.status).join(','),
+        'every key keeps the status it had'
+      );
+    });
+
+    it('UI41: a URL with no key cannot be tested, and says why', async () => {
+      const nodes = installDom();
+      await seed();
+      await seedSecondUrl();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+      await tapModel(rowsOfBlock(blockWithUrl(nodes, 'other.test'))[0]);
+      await tap(nodes.get('btnTestModel'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      assertEqual(nodes.get('testDialog').open, true, 'the sheet still opens');
+      // "No keys" and "keys not loaded" must not look the same to someone
+      // deciding whether to add a key or wait.
+      assertEqual(
+        nodes.get('testKey').children[0].textContent,
+        'URL này chưa có API key',
+        'and the reason is on the key picker'
+      );
+      assertEqual(nodes.get('testRun').disabled, true, 'the run button is disabled');
+    });
+
+    it('UI42: the bulk sheet names the URL and the key before it runs', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tapModel(modelRowsOf(nodes)[0]);
+
+      await tap(nodes.get('btnBulk'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      assertEqual(nodes.get('bulkDialog').open, true, 'the bulk sheet opened');
+      assertEqual(nodes.get('bulkUrl').textContent, 'https://gw.test/v1', 'the URL is on screen');
+      // Both keys, each with its status: picking between two masked keys that
+      // look alike is otherwise guesswork.
+      assertEqual(nodes.get('bulkKey').children.length, 2, 'both keys offered');
+      assertEqual(nodes.get('bulkRun').disabled, false, 'and the run is possible');
+    });
+
+    it('UI43: the estimate states the cost before anything is sent', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tapModel(modelRowsOf(nodes)[0]);
+      await tap(nodes.get('btnBulk'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      const estimate = nodes.get('bulkEstimate').textContent;
+      assert(estimate.includes('20 request'), 'the default limit is stated: ' + estimate);
+      assert(estimate.includes('160'), 'and so is the token cost: ' + estimate);
+      assert(estimate.includes('có phí'), 'plus the fact that paid models are skipped: ' + estimate);
+
+      nodes.get('bulkLimit').value = '80';
+      for (const fn of nodes.get('bulkLimit')._listeners.input ?? []) fn({ target: nodes.get('bulkLimit') });
+
+      const heavy = nodes.get('bulkEstimate').textContent;
+      assert(heavy.includes('80 request'), 'a new number gives a new estimate: ' + heavy);
+      // Past this the user is spending a real quota, and that is said in a
+      // different colour rather than left to be inferred from the digits.
+      assertEqual(nodes.get('bulkEstimate').className.includes('warn'), true, 'and it is flagged');
+    });
+
+    it('UI44: a limit past the cap is capped, not obeyed', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tapModel(modelRowsOf(nodes)[0]);
+      await tap(nodes.get('btnBulk'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      nodes.get('bulkLimit').value = '5000';
+      for (const fn of nodes.get('bulkLimit')._listeners.input ?? []) fn({ target: nodes.get('bulkLimit') });
+
+      // A run that takes longer than anyone will sit through is not a run, so
+      // the number is bounded rather than trusted.
+      assert(
+        nodes.get('bulkEstimate').textContent.includes('200 request'),
+        'five thousand is read as two hundred: ' + nodes.get('bulkEstimate').textContent
+      );
+    });
+
+    it('UI45: the run asks before spending, and paints one row per model', async () => {
+      const nodes = installDom();
+      await seed();
+      const mock = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      globalThis.fetch = mock;
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tapModel(modelRowsOf(nodes)[0]);
+      await tap(nodes.get('btnBulk'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      nodes.get('bulkLimit').value = '2';
+      for (const fn of nodes.get('bulkLimit')._listeners.input ?? []) fn({ target: nodes.get('bulkLimit') });
+
+      let asked = false;
+      globalThis.confirm = () => { asked = true; return true; };
+      mock.reset();
+
+      await tap(nodes.get('bulkRun'));
+      await new Promise((r) => setTimeout(r, 400));
+
+      assertEqual(asked, true, 'the cost was confirmed before the first request');
+      const sent = mock.calls.filter((c) => c.url.includes('/chat/completions'));
+      assertEqual(sent.length, 2, 'exactly the requested number of requests');
+      assertEqual(
+        nodes.get('bulkRows').children.filter((c) => c.classList.contains('bulk-row')).length,
+        2,
+        'one row per model'
+      );
+      assert(
+        nodes.get('bulkProgress').textContent === '2/2',
+        'and the progress counter agrees: ' + nodes.get('bulkProgress').textContent
+      );
+    });
+
+    it('UI46: declining the confirmation sends nothing', async () => {
+      const nodes = installDom();
+      await seed();
+      const mock = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      globalThis.fetch = mock;
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tap(nodes.get('btnBulk'));
+      await new Promise((r) => setTimeout(r, 200));
+      mock.reset();
+
+      globalThis.confirm = () => false;
+      await tap(nodes.get('bulkRun'));
+      await new Promise((r) => setTimeout(r, 250));
+
+      assertEqual(
+        mock.calls.filter((c) => c.url.includes('/chat/completions')).length,
+        0,
+        'saying no costs nothing'
+      );
+    });
+
+    it('UI47: a URL with no key cannot be bulk probed, and says why', async () => {
+      const nodes = installDom();
+      await seed();
+      await seedSecondUrl();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+      await tapModel(rowsOfBlock(blockWithUrl(nodes, 'other.test'))[0]);
+      await tap(nodes.get('btnBulk'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      assertEqual(nodes.get('bulkDialog').open, true, 'the sheet still opens');
+      assertEqual(nodes.get('bulkRun').disabled, true, 'the run button is disabled');
+      assert(
+        nodes.get('bulkRows').textContent.includes('chưa có API key'),
+        'and the reason is on screen: ' + nodes.get('bulkRows').textContent
+      );
+    });
+
     it('UI33: a locked URL sinks but is never dropped from the drawer', async () => {
       const nodes = installDom();
       await seed();
@@ -1828,7 +2372,7 @@ export function registerUiCases() {
       );
     });
 
-    it('UI23: tapping a model still opens it, so the long press did not eat the tap', async () => {
+    it('UI23: the ⓘ still opens a model, so the long press did not eat the tap', async () => {
       const nodes = installDom();
       await seed();
       globalThis.fetch = createMockFetch({
@@ -1836,7 +2380,6 @@ export function registerUiCases() {
         '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
       });
       await bootApp();
-      await openUrlInDrawer(nodes, 'Gateway');
 
       const tapped = modelRowsOf(nodes).map(modelNameOf)[0];
       await tapModel(modelRowsOf(nodes)[0]);
@@ -1844,6 +2387,320 @@ export function registerUiCases() {
 
       assertEqual(nodes.get('modelDialog').open, true, 'the sheet opened');
       assertEqual(nodes.get('modelTitle').textContent, tapped, 'for the tapped model');
+    });
+
+    // ---------------------------------------------------------------- copy list
+
+    it('UI48: tapping a model row copies its id and opens nothing', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      const copied = [];
+      globalThis.navigator.clipboard.writeText = async (text) => { copied.push(text); };
+
+      const row = modelRowsOf(nodes)[0];
+      const id = modelNameOf(row);
+      await tapModelRow(row);
+      await new Promise((r) => setTimeout(r, 60));
+
+      assertEqual(copied.length, 1, 'one tap is one copy');
+      assertEqual(copied[0], id, 'and what it copies is the model id: ' + copied[0]);
+      assertEqual(Boolean(nodes.get('modelDialog').open), false, 'no card was opened behind it');
+    });
+
+    it('UI49: the API chips are on the row, masked, and tapping one reveals and copies', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      const copied = [];
+      globalThis.navigator.clipboard.writeText = async (text) => { copied.push(text); };
+
+      const row = modelRowsOf(nodes)[0];
+      const chips = apiChipsOf(row);
+      assert(chips.length >= 1, 'the URL keys are on the row, not only inside the card');
+      assertEqual(
+        chips.some((c) => c.textContent.includes(KEY_A) || c.textContent.includes(KEY_B)),
+        false,
+        'no full key is on screen before a tap: ' + chips.map((c) => c.textContent).join(' | ')
+      );
+
+      await tap(chips[0]);
+      await new Promise((r) => setTimeout(r, 120));
+
+      assert(
+        [KEY_A, KEY_B].includes(copied[0]),
+        'tapping copies the whole key, not the masked form: ' + copied[0]
+      );
+      const after = apiChipsOf(modelRowsOf(nodes)[0])[0];
+      assertEqual(
+        after.textContent.includes(copied[0]),
+        true,
+        'and the key that was copied is the one revealed on the row'
+      );
+    });
+
+    it('UI50: the URL header carries the URL, copies it, and is sticky', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      const copied = [];
+      globalThis.navigator.clipboard.writeText = async (text) => { copied.push(text); };
+
+      const head = blockCopyOf(firstBlock(nodes));
+      assert(head, 'every block has a URL header');
+      assertEqual(
+        head.textContent.includes('https://gw.test/v1'),
+        true,
+        'the header carries the URL: ' + head.textContent
+      );
+
+      await tap(head);
+      await new Promise((r) => setTimeout(r, 60));
+      assertEqual(copied[0], 'https://gw.test/v1', 'and one tap copies it');
+
+      // Sticky is what makes the URL readable at the moment it is needed: the
+      // header has to stop below the app bar, not scroll away with its rows.
+      const css = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+      assert(
+        /\.urlhead\s*\{[^}]*position:\s*sticky/.test(css),
+        'the URL header must be sticky'
+      );
+      assert(
+        /\.urlhead\s*\{[^}]*top:\s*var\(--appbar-h\)/.test(css),
+        'and it must stop below the app bar rather than under it'
+      );
+    });
+
+    it('UI51: a model nobody priced is hidden by default and reachable behind its own chip', async () => {
+      const nodes = installDom();
+      await seed();
+      await seedUnknownModel();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      const chip = (level) => globalThis.__allChips.find((c) => c.dataset.filter === level);
+      const names = () => modelRowsOf(nodes).map(modelNameOf);
+
+      assertEqual(names().includes('bi-an-1'), false, 'no price and no hint: not in the 0đ list');
+      assertEqual(names().length, 2, 'the two models priced at zero are');
+
+      // Hiding it is not discarding it, and the count is what says so: a list
+      // that quietly dropped a scanned model would read as a broken scan.
+      const count = nodes.get('filterCount').textContent;
+      assert(count.includes('1'), 'the count names how many are hidden: ' + count);
+      assert(count.includes('chưa rõ giá'), 'and says what kind they are: ' + count);
+
+      await tap(chip('unknown'));
+      await new Promise((r) => setTimeout(r, 200));
+      assertEqual(names().includes('bi-an-1'), true, 'its own chip is the way back to it');
+      assertEqual(names().length, 1, 'and that chip shows only that kind');
+    });
+
+    it('UI52: the URL menu still holds everything that used to sit on the block', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      await tap(blockMenuOf(firstBlock(nodes)));
+      await new Promise((r) => setTimeout(r, 80));
+
+      const labels = nodes.get('rowMenuActions').children.map((c) => c.textContent).join(' | ');
+      for (const wanted of [
+        'Quét lại URL này',
+        'Thêm API key',
+        'Thêm model thủ công',
+        'Quay vòng',
+        'Khoá model ở URL này',
+        'Xoá cấu hình riêng',
+        'Chép base URL',
+      ]) {
+        assert(labels.includes(wanted), `the URL menu must offer "${wanted}": ${labels}`);
+      }
+      assertEqual(nodes.get('rowMenu').open, true, 'and the menu is open');
+    });
+
+    // ------------------------------------------------- find and classify a URL
+
+    it('UI53: the drawer search narrows the URL list by name and by address', async () => {
+      const nodes = installDom();
+      await seed();
+      await seedSecondUrl();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      // The built-in providers ship with the app, so the drawer is never only
+      // the URLs a test made. Both test URLs being present is the fact that
+      // matters here, not the exact length of the list.
+      assert(
+        drawerNames(nodes).includes('Gateway') && drawerNames(nodes).includes('Other'),
+        'both test URLs are listed to begin with: ' + drawerNames(nodes)
+      );
+
+      const listBefore = modelRowsOf(nodes).length;
+      const box = nodes.get('urlSearch');
+      const type = async (value) => {
+        box.value = value;
+        for (const fn of box._listeners.input ?? []) await fn({ target: box });
+        await new Promise((r) => setTimeout(r, 120));
+      };
+
+      await type('other');
+      assertEqual(drawerNames(nodes).join(','), 'Other', 'only the matching URL is drawn: ' + drawerNames(nodes));
+
+      // The address counts too, not only the label: two entries can share a name
+      // and then the URL is the only thing that tells them apart.
+      await type('gw.test');
+      assertEqual(drawerNames(nodes).join(','), 'Gateway', 'the address is searched as well: ' + drawerNames(nodes));
+
+      // The main list is untouched: the URL search narrows the drawer and
+      // nothing else, so the list under the title still holds what it held. A
+      // URL filter that punched holes in it would make the count under the
+      // title disagree with the rows beneath it.
+      assertEqual(modelRowsOf(nodes).length, listBefore, 'the main list is not filtered by the URL search');
+
+      // Clearing is its own control. A search box on a phone that can only be
+      // undone by typing the whole thing backwards is a trap.
+      await type('zzz');
+      assertEqual(drawerNames(nodes).length, 0, 'a search that matches nothing draws nothing');
+      await tap(nodes.get('urlSearchClear'));
+      await new Promise((r) => setTimeout(r, 120));
+      assert(
+        drawerNames(nodes).includes('Gateway') && drawerNames(nodes).includes('Other'),
+        'and clearing brings every URL back: ' + drawerNames(nodes)
+      );
+      assert(nodes.get('urlSearch').value === '', 'with the box emptied, not left holding the old word');
+    });
+
+    it('UI54: the class buttons split the drawer by what a URL needs', async () => {
+      const nodes = installDom();
+      await seed();
+      await seedClassifiedUrls();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      // Both classes are on screen first, because no class has been chosen.
+      assertEqual(drawerRow(nodes, 'Open Gate').draggable, true, 'rows are draggable while nothing is filtered');
+      assert(
+        drawerNames(nodes).includes('Open Gate') && drawerNames(nodes).includes('Locked Gate'),
+        'both classes are listed to begin with'
+      );
+
+      await tap(classButton('nokey'));
+      await new Promise((r) => setTimeout(r, 200));
+      assert(drawerNames(nodes).includes('Open Gate'), 'the URL usable without a key stays: ' + drawerNames(nodes));
+      assertEqual(drawerNames(nodes).includes('Locked Gate'), false, 'and the one that needs a key is gone');
+      assertEqual(classButton('nokey').classList.contains('on'), true, 'and the button shows it is on');
+      assertEqual(
+        drawerRow(nodes, 'Open Gate').draggable !== true,
+        true,
+        'a narrowed list is a view, so it is not draggable'
+      );
+      // The line under the list is the only place the gesture is named, so it
+      // has to stop promising a drag the list no longer accepts.
+      assert(
+        nodes.get('sideHint').textContent.includes('Đang lọc'),
+        'the legend says dragging is off: ' + nodes.get('sideHint').textContent
+      );
+
+      await tap(classButton('needkey'));
+      await new Promise((r) => setTimeout(r, 200));
+      assert(drawerNames(nodes).includes('Locked Gate'), 'then the one that needs a key: ' + drawerNames(nodes));
+      assertEqual(drawerNames(nodes).includes('Open Gate'), false, 'and the open one is gone');
+      assertEqual(classButton('nokey').classList.contains('on'), false, 'and only one class can be on');
+
+      // Pressing the class that is already on is the way back to every URL: two
+      // classes leave no room for a third "tất cả" answer on a phone line.
+      await tap(classButton('needkey'));
+      await new Promise((r) => setTimeout(r, 200));
+      assert(
+        drawerNames(nodes).includes('Open Gate') && drawerNames(nodes).includes('Locked Gate'),
+        'and off means everything again: ' + drawerNames(nodes)
+      );
+      assertEqual(drawerRow(nodes, 'Open Gate').draggable, true, 'with dragging back on');
+      assertEqual(
+        nodes.get('sideHint').textContent.includes('kéo'),
+        true,
+        'and the drag hint comes back with the unfiltered list'
+      );
+    });
+
+    it('UI55: the free-count order is one button, and the select agrees with it', async () => {
+      const nodes = installDom();
+      await seed();
+      // A URL with no models, named so the count and the alphabet disagree: a
+      // button that only repainted itself would pass the state checks below and
+      // fail right here.
+      await new ProviderRegistry(storageRef).upsert({ name: 'Aaa', baseURL: 'https://aaa.test/v1' });
+      globalThis.__FMH_SEED__.providers = await storageRef.list('providers');
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      // Compared by where the two names sit relative to each other, not by the
+      // head of the list: the built-in providers are in there too, and pinning
+      // the first row would make this a test of their names.
+      const names = () => drawerNames(nodes);
+      const btn = nodes.get('urlSortFree');
+
+      assert(
+        names().indexOf('Aaa') < names().indexOf('Gateway'),
+        'by default the two sit in the order the user arranged: ' + names().slice(0, 6)
+      );
+
+      await tap(btn);
+      await new Promise((r) => setTimeout(r, 200));
+      assert(
+        names().indexOf('Gateway') < names().indexOf('Aaa'),
+        'the button leads with the URL holding the most free models: ' + names().slice(0, 6)
+      );
+      assertEqual(nodes.get('urlSort').value, 'models', 'and the select reads the same order');
+      assertEqual(btn.classList.contains('on'), true, 'with the button marked as on');
+
+      await tap(btn);
+      await new Promise((r) => setTimeout(r, 200));
+      assertEqual(btn.classList.contains('on'), false, 'pressing it again turns it off');
+      assertEqual(nodes.get('urlSort').value, 'manual', 'and the select goes back with it, not its own way');
+      assert(
+        names().indexOf('Aaa') < names().indexOf('Gateway'),
+        'and the list is back in the order it started in'
+      );
+    });
+
+    it('UI56: "khoá tất cả" can be undone from the same button', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      const slot = nodes.get('lockAllUrls');
+      const allBtn = () => slot.children[0];
+      assert(allBtn(), 'the drawer mounts a lock-all control');
+
+      const rows = () => nodes.get('sidebarRoot').children.filter((c) => c.classList.contains('urlitem'));
+      const lockedCount = () => rows().filter((c) => c.classList.contains('locked')).length;
+      const total = rows().length;
+
+      assertEqual(lockedCount(), 0, 'nothing is locked to begin with');
+      assertEqual(allBtn().textContent, 'khoá tất cả', 'and the button offers to lock');
+
+      await tap(allBtn());
+      assertEqual(lockedCount(), total, `one tap locks every URL (${lockedCount()}/${total})`);
+
+      // The label has to follow the state it just changed. A control still
+      // reading "khoá tất cả" while everything is locked can only lock again, so
+      // the second tap looks like it did nothing - which is exactly the trap
+      // this case exists for.
+      assertEqual(allBtn().textContent, 'mở khoá tất cả', 'and it now offers the way back');
+
+      await tap(allBtn());
+      assertEqual(lockedCount(), 0, 'tapping it again unlocks everything');
+      assertEqual(allBtn().textContent, 'khoá tất cả', 'and the label comes back with the state');
     });
   });
 }

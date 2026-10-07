@@ -7,7 +7,7 @@
  */
 // Bumped whenever the shell changes. A new worker with the old name would keep
 // serving the previous cache, and the new name is what makes activate drop it.
-const CACHE = 'fmh-v9';
+const CACHE = 'fmh-v17';
 
 /**
  * Everything the page needs to boot, listed explicitly.
@@ -30,8 +30,15 @@ const SHELL = [
   './styles.css',
   './core/adapters/base.js',
   './core/adapters/builtin.js',
+  './core/bulk-probe.js',
   './core/circuit.js',
   './core/config.js',
+  './core/db/idb.js',
+  './core/db/index.js',
+  './core/db/memory.js',
+  './core/db/migrations.js',
+  './core/db/query.js',
+  './core/db/schema.js',
   './core/error-classifier.js',
   './core/free-detector.js',
   './core/health.js',
