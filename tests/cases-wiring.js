@@ -59,7 +59,7 @@ export function registerWiringCases() {
     });
 
     it('WR7: the controls the user asked for are present', () => {
-      for (const id of ['btnScanAll', 'btnAddUrl', 'appbarAddUrl', 'btnAddKey', 'btnTestModel', 'btnBulk', 'keyDialog', 'addUrlDialog', 'modelDialog', 'urlSearch', 'urlSearchClear', 'urlSortFree']) {
+      for (const id of ['btnScanAll', 'btnAddUrl', 'appbarAddUrl', 'btnAddKey', 'btnTestModel', 'btnBulk', 'keyDialog', 'addUrlDialog', 'modelDialog', 'urlSearch', 'urlSearchClear', 'urlSortFree', 'scopeClear']) {
         assert(htmlSource.includes('id="' + id + '"'), 'index.html must declare #' + id);
         assert(appSource.includes("'" + id + "'"), 'app.js must wire #' + id);
       }
@@ -231,6 +231,15 @@ export function registerWiringCases() {
         !appSource.includes("filterBy('paid')"),
         'and nothing routes to it either'
       );
+    });
+
+    it('WR16b: the filter row offers two tabs, not the old three', () => {
+      // "0đ" and "Chắc 0đ" were merged into one Free tab. A leftover "zero"
+      // chip would split a set the merge deliberately joined.
+      assert(!htmlSource.includes('data-filter="zero"'), 'no zero chip in index.html');
+      assert(!appSource.includes("filterBy('zero')"), 'and nothing routes to it either');
+      const chips = [...htmlSource.matchAll(/<button[^>]*data-filter="([^"]+)"/g)].map((m) => m[1]);
+      assertEqual(chips.length, 2, 'exactly two tabs, got: ' + chips.join(','));
     });
 
     it('WR17: the main list filters paid models out before anything else', () => {

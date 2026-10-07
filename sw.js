@@ -7,7 +7,7 @@
  */
 // Bumped whenever the shell changes. A new worker with the old name would keep
 // serving the previous cache, and the new name is what makes activate drop it.
-const CACHE = 'fmh-v17';
+const CACHE = 'fmh-v18';
 
 /**
  * Everything the page needs to boot, listed explicitly.

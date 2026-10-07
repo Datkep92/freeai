@@ -17,18 +17,24 @@ FILES CREATED:
 FILES CHANGED:
 - core/free-detector.js   thêm isFreeModel() và isUnknownPrice() — định nghĩa "0đ" dùng chung
 - app.js                  màn hình chính thành một danh sách phẳng URL · model · API; bấm là copy;
-                          chip lọc 0đ / chắc 0đ / chưa rõ giá; bỏ 2 nút appbar "URL này";
+                          2 tab lọc Free / Null (gộp "0đ" + "chắc 0đ"); bỏ 2 nút appbar "URL này";
                           chuyển cấu hình quay vòng + khoá-cả-URL vào menu ⋮ của từng URL;
-                          ngăn kéo URL có ô tìm URL + nút phân loại URL (xem mục riêng bên dưới)
-- index.html              chip mới, tiêu đề mới, bỏ btnAddModel/btnAddKeyUrl; thêm #urlSearch /
+                          ngăn kéo URL có ô tìm URL + nút phân loại URL;
+                          bấm một URL trong ngăn kéo → thu danh sách chính về URL đó (state `urlScope`),
+                          thanh #scopeBar tên URL + nút "Tất cả URL" là đường về (xem mục riêng bên dưới)
+- index.html              hàng lọc còn 2 chip: Free (mặc định) · Null (chưa rõ giá) — bỏ chip "Chắc 0đ";
+                          thêm #scopeBar / #scopeName / #scopeUrl / #scopeClear;
+                          tiêu đề mới, bỏ btnAddModel/btnAddKeyUrl; giữ #urlSearch /
                           #urlSearchClear / #urlClass (3 nút) / #urlSortFree / #sideHint;
-                          bỏ dải chú thích màu; ?v=14
+                          bỏ dải chú thích màu; ?v=15
 - styles.css              header URL dính dưới appbar, chip API, dòng model 2 tầng; xoá CSS chết (.prio, .actions);
-                          hàng nút phân loại URL; [hidden] { display:none !important }; bỏ chú thích màu (.side-legend/.lg)
-- sw.js                   cache fmh-v14 → fmh-v17
+                          hàng nút phân loại URL; .scopebar cho thanh lọc theo URL;
+                          [hidden] { display:none !important }; bỏ chú thích màu (.side-legend/.lg)
+- sw.js                   cache fmh-v17 → fmh-v18
 - package.json            thêm script "mock"
-- tests/cases-ui.js       viết lại case bám cấu trúc cũ + 8 case mới (UI48–UI55)
-- tests/cases-wiring.js   WR7 / WR17 / WR18 theo cấu trúc mới
+- tests/cases-ui.js       viết lại case bám cấu trúc cũ; UI4a/UI4a2/UI4b/UI4b2 theo 2 tab;
+                          thêm UI56 (khoá tất cả ↔ mở khoá), UI57 (bấm URL thu danh sách + nút về)
+- tests/cases-wiring.js   WR7 / WR16 / WR16b / WR17 / WR18 theo cấu trúc mới
 - uicheck.mjs             render app.js thật, kiểm tra header·model·API và đường copy
 
 SỬA LỖI KÈM THEO (phát hiện khi đổi màn hình chính):
@@ -57,10 +63,9 @@ SCANNER RESULTS:
 
 FREE DETECTOR:
 - Bốn mức giữ nguyên (FREE_VERIFIED / FREE_LIKELY / FREE_UNKNOWN / PAID), chỉ đổi cái gì được hiện:
-  0đ  = giá công bố 0 HOẶC tên có chữ free   (mặc định)
-  Chắc 0đ = chỉ model nhà cung cấp công bố giá 0
-  Chưa rõ giá = model không giá, tên không gợi ý — đang ẩn, có chip riêng để mở lại
-  PAID = không chip nào chạm tới, không bao giờ xuất hiện
+  Free = giá công bố 0 HOẶC tên có chữ free   (mặc định; gộp cả "0đ" lẫn "chắc 0đ")
+  Null = model không giá, tên không gợi ý — đang ẩn, có tab riêng để mở lại
+  PAID = không tab nào chạm tới, không bao giờ xuất hiện
 - Lượt kiểm chứng trên mock: 6 model hiện (4 giá 0 + 2 tên free), 2 model chưa rõ giá bị ẩn và
   đếm rõ trên appbar ("2 chưa rõ giá ẩn"), model có giá không lọt vào danh sách.
 
@@ -74,7 +79,20 @@ ROUTER:
 - FREE_ONLY; quay vòng KEY → KEY kế → hết key → MODEL kế → PROVIDER kế.
 - Cooldown theo Retry-After hoặc backoff có trần; circuit breaker ba trạng thái; khoá theo 3 tầng.
 
-TÌM & PHÂN LOẠI URL (yêu cầu mới nhất):
+GỘP TAB + MỞ DANH SÁCH THEO URL (yêu cầu mới nhất):
+- Hàng lọc model còn 2 tab: "Free" (mặc định) và "Null".
+  "Free" = gộp chip "0đ" + "Chắc 0đ" cũ: một model công bố giá 0 vốn cũng là free,
+  nên hai chip chồng nhau khiến người dùng phải nhớ luật để phân biệt. Nay còn một tập duy nhất.
+  "Null" = model chưa rõ giá — vẫn là đường về cho những model bị danh sách mặc định ẩn.
+  Không có tab nào cho model có phí.
+- Bấm một URL trong ngăn kéo → danh sách chính chỉ còn model của URL đó.
+  Thanh #scopeBar ngay dưới appbar ghi tên + địa chỉ URL đang xem và có nút "Tất cả URL" để bỏ lọc.
+  Tiêu đề đổi thành "Model 0đ · <tên URL>", và số ở appbar đếm trong phạm vi URL đang xem
+  ("N model 0đ · 1 URL · …") — con số không hứa những dòng mà chế độ xem này đang ẩn.
+  URL bị xoá khi đang xem thì tự trả về "mọi URL" thay vì vẽ danh sách rỗng.
+- Thanh lọc theo URL là trạng thái tạm của phiên (không lưu storage): mở lại app là về "Tất cả".
+
+TÌM & PHÂN LOẠI URL:
 - Ô "Tìm URL..." trong ngăn kéo: lọc danh sách URL theo tên hoặc địa chỉ (base URL), có nút × để xoá.
   Ô này CHỈ lọc ngăn kéo — danh sách model 0đ ở màn hình chính không bị đụng tới.
 - Nút phân loại URL: "Tất cả" · "Không cần key" · "Cần key". Hai lớp đúng như yêu cầu
@@ -97,16 +115,18 @@ MÀN HÌNH (mục đích người dùng yêu cầu):
 - Nhấn giữ dòng vẫn mở sheet hành động; kéo-thả vẫn sắp xếp trong từng URL.
 
 TEST RESULTS:
-- npm test        293/293 PASS   (exit 0; thêm UI53 tìm URL, UI54 phân loại URL, UI55 xếp theo số model 0đ,
-                  UI56 khoá tất cả ↔ mở khoá tất cả)
-- npm run uicheck PASS           (exit 0; render app.js thật, 0 dòng "LOI")
+- npm test        295/295 PASS   (exit 0; UI53 tìm URL, UI54 phân loại URL, UI55 xếp theo số model 0đ,
+                  UI56 khoá tất cả ↔ mở khoá tất cả, UI57 bấm URL thu danh sách + thanh về "Tất cả URL")
+- npm run uicheck PASS           (exit 0; render app.js thật, 0 dòng "LOI"; tieu de "Model 0đ · Gateway",
+                  1 khoi URL, "2 model 0đ · 1 URL")
 - node --check app.js SYNTAX OK
-- Browser thật (http://localhost:8788) + mock provider: danh sách, chip, đo tốc độ, copy đều chạy;
-  gõ "mock" vào ô tìm URL → chỉ còn Mock 0đ; bấm "Cần key" → chỉ nhóm CẦN API KEY;
-  bấm "0đ ↓" → URL nhiều model 0đ lên đầu và ô "Xếp" đổi theo; console không có lỗi.
+- Browser thật (http://localhost:8788) + mock provider: 2 tab "Free 32 · Null 1198" hiện đúng;
+  mở ngăn kéo bấm OpenRouter → chỉ còn 1 khối URL, thanh "OpenRouter · https://openrouter.ai/api/v1"
+  + nút "Tất cả URL", tiêu đề "Model 0đ · OpenRouter", đếm "20 model 0đ · 1 URL · 7 chưa rõ giá ẩn";
+  bấm "Tất cả URL" → về lại 3 khối, "32 model 0đ · 3 URL", thanh ẩn; console không có lỗi.
 
 BUILD RESULT:
-Không có bước build (web tĩnh). Shell đã đổi nên sw.js bump lên fmh-v15 và index.html ?v=12.
+Không có bước build (web tĩnh). Shell đã đổi nên sw.js bump lên fmh-v18 và index.html ?v=15.
 
 HOW TO RUN:
   npm start                 # UI: http://localhost:8788
@@ -121,10 +141,11 @@ KNOWN ISSUES:
   Đây là lựa chọn đã chốt ("ẩn khỏi danh sách, vẫn lưu"), nhưng nếu nhà cung cấp không công bố giá
   thì không loại trừ được khả năng đó là bản tính phí. Muốn chặn hẳn thì cần một công tắc trong core/config.js.
 - Đã kiểm chứng đầu-cuối bằng mock provider, chưa bằng key thật của provider thật.
-- Cây làm việc còn ~20 file sửa chưa commit từ các lượt trước (không thuộc lượt này);
-  lượt này không commit gì.
-- Ô tìm URL và bộ lọc là trạng thái tạm của phiên (không lưu vào storage): mở lại app là về "Tất cả".
-  Đây là lựa chọn có chủ ý — một bộ lọc còn sót lại sẽ khiến người dùng tưởng mất URL.
+- Các thay đổi của lượt này (gộp tab Free/Null + thu danh sách theo URL) CHƯA commit;
+  cây làm việc đang giữ chúng cùng các sửa trước đó.
+- Ô tìm URL, bộ lọc URL và thanh lọc-theo-URL là trạng thái tạm của phiên (không lưu storage):
+  mở lại app là về "Tất cả". Đây là lựa chọn có chủ ý — một bộ lọc còn sót lại sẽ khiến
+  người dùng tưởng mất URL (hoặc tưởng mất model).
 
 NEXT STEP:
 - Dùng key thật trên một URL thật để xác nhận đầu-cuối ngoài đời.

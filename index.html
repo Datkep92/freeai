@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Free Model Hub</title>
-<link rel="stylesheet" href="./styles.css?v=14" />
+<link rel="stylesheet" href="./styles.css?v=15" />
 </head>
 <body>
 
@@ -133,29 +133,42 @@
     <button id="btnCancel" class="small danger" hidden>Huỷ</button>
   </section>
 
-  <!-- One choice among neighbours, so it is drawn as one object: a segmented
-       control with a single selected cell rather than three loose pills.
+  <!-- When one URL is picked in the drawer, the list below narrows to it and
+       this bar is both the label and the way back. It stays hidden while every
+       URL is shown, because a control that clears a filter that is not set is
+       just noise above the list. -->
+  <div id="scopeBar" class="scopebar" hidden>
+    <span class="scopebar-label">
+      <span class="scopebar-name" id="scopeName"></span>
+      <span class="scopebar-url" id="scopeUrl"></span>
+    </span>
+    <button id="scopeClear" class="mini" aria-label="Bỏ lọc, xem mọi URL">Tất cả URL</button>
+  </div>
 
-       These are three answers to one question - "how do I know this costs
-       nothing" - not three kinds of model, so the labels name the evidence.
-       "0đ" is the list itself: a price the provider published as zero, or a name
-       that says free. "Chắc 0đ" narrows to what a provider actually priced at
-       zero. "Chưa rõ giá" is the way back to the models with no price and no
+  <!-- One choice among neighbours, so it is drawn as one object: a segmented
+       control with a single selected cell rather than two loose pills.
+
+       These are two answers to one question - "is this model usable for
+       nothing, and how do I know" - not two kinds of model.
+
+       "Free" is the list itself: a price the provider published as zero, or a
+       name that says free. It merges what used to be two chips ("0đ" and "Chắc
+       0đ") because a model priced at zero is also free; two buttons whose sets
+       overlap made the user read a rule to tell them apart.
+
+       "Null" (chưa rõ giá) is the way back to the models with no price and no
        name hint - they are never mixed into the list, and never discarded
        either, so a provider that publishes no pricing cannot hide a free model
        for good.
 
        Nothing here can bring a paid model back: this list exists to answer
        "what can I use for nothing", and a paid row inside it is a trap. -->
-  <nav class="filter-row" aria-label="Lọc model theo mức độ chắc chắn là 0đ">
+  <nav class="filter-row" aria-label="Lọc model 0đ theo mức độ chắc chắn">
     <button class="chip on" data-filter="free">
-      <i class="cdot ok"></i><span class="chip-label">0đ</span><span class="chip-count"></span>
+      <i class="cdot ok"></i><span class="chip-label">Free</span><span class="chip-count"></span>
     </button>
-    <button class="chip" data-filter="zero">
-      <i class="cdot ok"></i><span class="chip-label">Chắc 0đ</span><span class="chip-count"></span>
-    </button>
-    <button class="chip" data-filter="unknown">
-      <i class="cdot"></i><span class="chip-label">Chưa rõ giá</span><span class="chip-count"></span>
+    <button class="chip" data-filter="unknown" title="Chưa rõ giá" aria-label="Model chưa rõ giá">
+      <i class="cdot"></i><span class="chip-label">Null</span><span class="chip-count"></span>
     </button>
   </nav>
 
@@ -506,6 +519,6 @@ model-free-2"></textarea>
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="./app.js?v=14"></script>
+<script type="module" src="./app.js?v=15"></script>
 </body>
 </html>

@@ -669,11 +669,49 @@ button.mini.lockall {
 }
 button.mini.lockall:active { background: var(--surface-3); color: var(--text); }
 
+/* ---- URL scope ----
+   One bar under the app bar saying which URL the list is narrowed to, with the
+   way back to every URL beside it. Hidden while nothing is picked: a strip that
+   clears a filter that is not set is noise above the list. */
+
+.scopebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 7px 8px 7px 11px;
+  background: var(--accent-dim);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+}
+.scopebar-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.scopebar-name {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scopebar-url {
+  color: var(--text-3);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scopebar .mini { flex: none; }
+
 /* ---- filters ----
-   One segmented control rather than four pills. The four levels are a single
+   One segmented control rather than two loose pills. The two tabs are a single
    choice among neighbours, so they are laid out as one object: sharing a
-   background, sharing a border, one selected cell. Four separate pills read as
-   four unrelated buttons, and the selected one fills with colour and shouts
+   background, sharing a border, one selected cell. Two separate pills read as
+   two unrelated buttons, and the selected one fills with colour and shouts
    louder than the data it filters. */
 
 .filter-row {
@@ -727,7 +765,7 @@ button.mini.lockall:active { background: var(--surface-3); color: var(--text); }
 .cdot.warn { background: var(--warn); }
 
 /* The label never truncates; the count is what gives way when the row is narrow.
-   A chip reading "Chắc…" tells the user nothing, whereas a chip reading "0đ · 3"
+   A chip reading "Nu…" tells the user nothing, whereas a chip reading "Free · 3"
    still does, so the number is the first thing to be dropped. */
 .chip-label { flex: none; }
 .chip-count {
@@ -747,9 +785,9 @@ button.mini.lockall:active { background: var(--surface-3); color: var(--text); }
   background: var(--accent-dim);
   color: var(--accent);
 }
-/* An empty chip keeps its place - a level that currently holds nothing is still
-   one of the four answers - but its count takes no room, because a bare pill
-   around nothing is just a gap in the row. */
+/* An empty chip keeps its place - a tab that currently holds nothing is still
+   one of the answers - but its count takes no room, because a bare pill around
+   nothing is just a gap in the row. */
 .chip-count:empty { display: none; }
 
 /* ---- search ---- */

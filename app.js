@@ -133,9 +133,13 @@ let searchTerm = '';
 let busy = false;
 let currentRun = null;
 let currentModel = null;   // { providerId, modelId }, set when a model dialog opens
-// The URL the drawer last jumped to. It marks a block and scrolls to it; it
-// never filters anything, because the main list shows every URL at once.
+// The URL the drawer last jumped to. It marks a block and scrolls to it.
 let focusProviderId = null;
+// The URL the main list is narrowed to, or null for "every URL". Picking a URL
+// in the drawer sets it: the drawer answers "which URL", and the list below then
+// answers "what is in this one". `focusProviderId` only marks and scrolls; this
+// one is what actually hides the other URLs.
+let urlScope = null;
 // Which URL and model a sheet is asking about. Both sheets can be opened from a
 // row that is not "the current model", so neither may read `currentModel`: a
 // manual test opened from a model's action sheet would otherwise run against
@@ -234,32 +238,38 @@ function timeAgo(iso) {
  */
 
 /**
- * The three chips.
+ * The two tabs.
  *
- * Each matcher asks about the same field and none of them needs to know about
- * the others. `unknown` deliberately includes a record with no `freeStatus` at
- * all - one written by an older version of the app, or by a provider that
- * published no status - because an equality test would drop such a row from
- * every chip and leave it invisible with no way to find it. It is the way back
- * to the models the default list hides, and hiding them is not the same as
- * throwing them away.
+ * "0đ" and "Chắc 0đ" used to be two chips, but a model priced at zero is also
+ * free, so the two sets overlapped and telling them apart was a rule the user
+ * had to learn. They are one tab now - `free` - meaning exactly what the list
+ * means: a published price of zero, or a name that says free.
+ *
+ * `unknown` (shown as "Null") deliberately includes a record with no
+ * `freeStatus` at all - one written by an older version of the app, or by a
+ * provider that published no status - because an equality test would drop such
+ * a row from every tab and leave it invisible with no way to find it. It is the
+ * way back to the models the default list hides, and hiding them is not the
+ * same as throwing them away.
  */
 const FILTERS = {
   free: (m) => isFreeModel(m),
-  zero: (m) => m.freeStatus === FREE.FREE_VERIFIED,
   unknown: (m) => isUnknownPrice(m),
 };
 
 // Kept so a stale bookmarked chip name cannot silently widen the list.
 FILTERS.paid = () => false;
 FILTERS.all = FILTERS.free;
+// A chip named "zero" may survive in a cached shell; folding it into `free`
+// keeps an old bookmark from crashing the render it was written to open.
+FILTERS.zero = FILTERS.free;
 
 /** What the count under the title calls the rows it is counting. */
 const FILTER_LABEL = {
   free: 'model 0đ',
-  zero: 'model chắc 0đ',
   unknown: 'model chưa rõ giá',
 };
+FILTER_LABEL.zero = FILTER_LABEL.free;
 
 function filterBy(filter) {
   activeFilter = FILTERS[filter] ? filter : 'free';
@@ -310,6 +320,24 @@ function openDrawer(open) {
 
 function toggleDrawer() {
   openDrawer(!document.body.classList.contains('nav-open'));
+}
+
+/**
+ * Draw the bar that names the URL the list is narrowed to.
+ *
+ * It is the label and the way back in one object: the URL being shown, and the
+ * button that stops showing it. `null` hides it, because with every URL on
+ * screen there is nothing to clear.
+ */
+function renderScopeBar(provider) {
+  const bar = $('scopeBar');
+  if (!bar) return;
+  bar.hidden = !provider;
+  if (!provider) return;
+  const name = $('scopeName');
+  const url = $('scopeUrl');
+  if (name) name.textContent = provider.name;
+  if (url) url.textContent = provider.baseURL;
 }
 
 /**
@@ -625,8 +653,10 @@ function urlRow(provider) {
   openBtn.append(badge);
 
   openBtn.addEventListener('click', async () => {
-    // The drawer is a jump list, not a filter: the main list always shows every
-    // URL, so picking one here means "take me to that block".
+    // Picking a URL narrows the list below to it: the drawer answers "which
+    // URL", and the list then answers "what is in this one". The bar under the
+    // app bar names it and carries the way back to every URL.
+    urlScope = provider.id;
     focusProviderId = provider.id;
     openDrawer(false);
     await render();
@@ -997,12 +1027,19 @@ async function render() {
   if (focusProviderId && !providerRows.some((p) => p.id === focusProviderId)) {
     focusProviderId = null;
   }
+  // The narrowed-to URL can be deleted too. Falling back to "every URL" is
+  // better than drawing an empty list with a bar naming a URL that is gone.
+  const scopeProvider =
+    (urlScope && providerRows.find((p) => p.id === urlScope)) || null;
+  if (!scopeProvider) urlScope = null;
+  const scopedRows = scopeProvider ? [scopeProvider] : providerRows;
 
   await renderSidebar(providerRows, modelRows, keyRows);
 
   const root = $('treeRoot');
   root.replaceChildren();
-  $('treeTitle').textContent = 'Tất cả model 0đ';
+  renderScopeBar(scopeProvider);
+  $('treeTitle').textContent = scopeProvider ? `Model 0đ · ${scopeProvider.name}` : 'Tất cả model 0đ';
 
   // Models and keys are bucketed once per render and every block below reads the
   // same buckets, so one URL's rows and its counts cannot disagree.
@@ -1013,8 +1050,13 @@ async function render() {
   }
 
   // Every free model of every URL, once. `listable` is what keeps a priced model
-  // out of all three chips at every filter level; the chip only narrows further.
+  // out of both tabs at every filter level; the tab only narrows further.
   const listable = modelRows.filter((m) => m.active !== false && m.freeStatus !== FREE.PAID);
+  // The tabs count what is on screen. When the list is narrowed to one URL, a
+  // count drawn over every URL would promise rows that this view cannot show.
+  const viewListable = scopeProvider
+    ? listable.filter((m) => m.providerId === scopeProvider.id)
+    : listable;
 
   // Kept for the URL menu, which has to name every model of one URL to lock them
   // all and cannot read storage while it is building a sheet.
@@ -1024,11 +1066,11 @@ async function render() {
     modelIdsByProvider.get(model.providerId).push(model);
   }
 
-  // Each chip carries its own size. A chip that reads "chắc 0đ" but is empty is
+  // Each chip carries its own size. A chip that reads "Null" but is empty is
   // indistinguishable from one holding two models, so a user has to press it to
   // find out - and a dead chip looks broken rather than merely empty. Counting
   // here rather than in the handler is what keeps the chips and the list in
-  // agreement: they are both derived from the same `listable`.
+  // agreement: they are both derived from the same `viewListable`.
   for (const chip of document.querySelectorAll('.chip')) {
     const slot = chip.querySelector('.chip-count');
     if (!slot) continue;
@@ -1038,7 +1080,7 @@ async function render() {
     // list the user asked for was never drawn at all.
     const countFor = FILTERS[chip.dataset.filter];
     if (!countFor) continue;
-    const n = listable.filter((m) => countFor(m)).length;
+    const n = viewListable.filter((m) => countFor(m)).length;
     slot.textContent = n ? String(n) : '';
   }
 
@@ -1056,7 +1098,7 @@ async function render() {
   let shown = 0;
   let shownUrls = 0;
 
-  for (const provider of sortUrls(providerRows)) {
+  for (const provider of sortUrls(scopedRows)) {
     // A search that names the URL brings back all of its models. With every URL
     // on one screen, "openrouter" is a thing worth typing into the search box,
     // and answering "no models match" would be the wrong answer.
@@ -1102,7 +1144,7 @@ async function render() {
   // a scan just found reads as a broken scan; a count says the models are here
   // and one tap away behind their own chip.
   const hiddenUnknown =
-    activeFilter === 'unknown' ? 0 : listable.filter((m) => isUnknownPrice(m)).length;
+    activeFilter === 'unknown' ? 0 : viewListable.filter((m) => isUnknownPrice(m)).length;
   $('filterCount').textContent =
     `${shown} ${FILTER_LABEL[activeFilter] ?? FILTER_LABEL.free} · ${shownUrls} URL` +
     (hiddenUnknown ? ` · ${hiddenUnknown} chưa rõ giá ẩn` : '');
@@ -2504,6 +2546,13 @@ for (const tab of document.querySelectorAll('.tab')) {
 $('searchBox').addEventListener('input', (e) => {
   searchTerm = e.target.value.trim();
   render();
+});
+
+// Undo the URL pick: the list goes back to every URL and the bar hides itself.
+$('scopeClear').addEventListener('click', async () => {
+  urlScope = null;
+  focusProviderId = null;
+  await render();
 });
 
 // ------------------------------------------------- rotation: lock and order

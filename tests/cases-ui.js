@@ -32,6 +32,7 @@ const DOM_IDS = [
   'modelAddDialog', 'manualHint', 'manualModel', 'manualFree', 'manualConfirm', 'manualCancel',
   'sidebar', 'sidebarRoot', 'btnMenu', 'scrim', 'btnAddUrl', 'treeTitle', 'urlSort',
   'urlSearch', 'urlSearchClear', 'urlClass', 'urlSortFree', 'sideHint',
+  'scopeBar', 'scopeName', 'scopeUrl', 'scopeClear',
   'btnAddKeyUrl', 'lockAllUrls', 'lockAllKeys', 'btnTestModel',
   'testDialog', 'testHint', 'testClose', 'testUrl', 'testModel', 'testKey',
   'testPrompt', 'testResult', 'testRun', 'btnBulk',
@@ -585,6 +586,17 @@ async function tapUrl(row) {
 }
 
 /**
+ * Undo a URL pick, the way the bar's button does.
+ *
+ * A URL tapped in the drawer narrows the list to that URL now, so a case that
+ * has to see a second URL again goes through the same control the user would.
+ */
+async function clearScope(nodes) {
+  await tap(nodes.get('scopeClear'));
+  await new Promise((r) => setTimeout(r, 200));
+}
+
+/**
  * The tap target inside a model row, holding the emoji, the name, its facts and
  * the chevron.
  *
@@ -977,7 +989,7 @@ export function registerUiCases() {
       assertEqual(second.includes('space-bunny-free'), false, "the other URL's models do not leak in");
     });
 
-    it('UI4a: each filter chip narrows the list to its own claim', async () => {
+    it('UI4a: each tab narrows the list to its own claim', async () => {
       const nodes = installDom();
       await seed();
       globalThis.fetch = createMockFetch({
@@ -989,33 +1001,33 @@ export function registerUiCases() {
       const chip = (level) => globalThis.__allChips.find((c) => c.dataset.filter === level);
       const names = () => modelRowsOf(nodes).map(modelNameOf);
 
+      // The merge is the point: "0đ" and "Chắc 0đ" used to be two chips over
+      // overlapping sets. They are one tab now, so there are exactly two.
+      assertEqual(globalThis.__allChips.length, 2, 'two tabs: Free and Null');
+
       // Two free models and one priced one. Both free ones are priced at zero,
-      // which is the interesting case: a chip that only ever showed the
-      // zero-priced ones would pass a test written against these seeds.
+      // which is the interesting case: the merged Free tab has to keep them.
       assertEqual(names().length, 2, 'both free models are listed, the priced one is not');
-      assertEqual(chip('free').classList.contains('on'), true, 'and 0đ is the chip that is on');
+      assertEqual(chip('free').classList.contains('on'), true, 'and Free is the tab that is on');
 
-      await tap(chip('zero'));
-      await new Promise((r) => setTimeout(r, 200));
-      assertEqual(names().length, 2, 'chắc 0đ keeps both: their price is a published zero');
-      assertEqual(chip('zero').classList.contains('on'), true, 'and the chip shows it is on');
-
-      // The narrowest chip is the way back to the models nobody priced. It must
-      // not re-admit anything with a price.
+      // Null is the way back to the models nobody priced. It must not re-admit
+      // anything with a price.
       await tap(chip('unknown'));
       await new Promise((r) => setTimeout(r, 200));
-      assertEqual(names().length, 0, 'chưa rõ giá holds nothing here, and admits no priced model');
-      assertEqual(chip('unknown').classList.contains('on'), true, 'and the chip shows it is on');
+      assertEqual(names().length, 0, 'Null holds nothing here, and admits no priced model');
+      assertEqual(chip('unknown').classList.contains('on'), true, 'and the tab shows it is on');
 
       await tap(chip('free'));
       await new Promise((r) => setTimeout(r, 200));
-      assertEqual(names().length, 2, 'and 0đ brings both back');
+      assertEqual(names().length, 2, 'and Free brings both back');
+      assertEqual(chip('free').classList.contains('on'), true, 'and marks itself as the one on');
     });
 
-    it('UI4a2: a model that is free but not priced at zero leaves the 0$ chip', async () => {
-      // The two filters are not the same set, and the difference only shows on a
-      // model whose free status comes from something other than a price of zero.
-      // A chip wired to the same predicate as another would pass UI4a.
+    it('UI4a2: the merged Free tab keeps a model that is free only by name', async () => {
+      // A model whose free status comes from its name rather than a published
+      // price is the case the old "Chắc 0đ" chip excluded. Now that the two
+      // chips are one, Free must hold it, and Null - which means "price
+      // unknown" - must not.
       const nodes = installDom();
       await seed();
       await seedNameOnlyModel();
@@ -1032,17 +1044,17 @@ export function registerUiCases() {
         'a model whose name says free is still a model the user can use'
       );
 
-      await tap(chip('zero'));
+      await tap(chip('unknown'));
       await new Promise((r) => setTimeout(r, 200));
       assertEqual(
         names().includes('name-only-free'), false,
-        'but it has no published price of zero, so 0$ must not claim it'
+        'and Null, which is only for unknown prices, does not hold it'
       );
-      assertEqual(names().length, 2);
+      assertEqual(names().length, 0);
 
       await tap(chip('free'));
       await new Promise((r) => setTimeout(r, 200));
-      assertEqual(names().length, 3, 'and Tự quét 0đ still has it');
+      assertEqual(names().length, 3, 'and Free brings it back');
     });
 
     it('UI4b: every model lands in exactly one chip, and the counts add up', async () => {
@@ -1058,24 +1070,20 @@ export function registerUiCases() {
         return slot.textContent;
       };
 
-      // Every count is a subset of the free set, and the two chips overlap by
-      // design - a model priced at zero is both free and zero, so summing them
-      // is meaningless. What has to hold is that neither chip counts a paid
-      // model, and that the widest chip never reports fewer than the narrowest.
+      // Free counts every free model and Null counts the unpriced ones, so the
+      // two numbers describe the whole list and nothing behind it. What has to
+      // hold is that no tab counts a paid model.
       assertEqual(countOf('free'), '2', 'both models are free');
-      assertEqual(countOf('zero'), '2', 'and both are priced at zero');
-      assert(
-        Number(countOf('free')) >= Number(countOf('zero')),
-        'the free set cannot be smaller than the priced-at-zero subset of it'
-      );
+      assertEqual(countOf('unknown'), '', 'and neither is an unknown price');
 
-      // There is no chip for paid models, and that is deliberate rather than an
+      // There is no tab for paid models, and that is deliberate rather than an
       // oversight: a "0đ" list that offered a paid row behind a filter would be
       // offering money for nothing.
       assert(
         !globalThis.__allChips.some((c) => c.dataset.filter === 'paid'),
-        'no chip offers paid models'
+        'no tab offers paid models'
       );
+      assertEqual(globalThis.__allChips.length, 2, 'Free and Null, nothing else');
     });
 
     it('UI4b2: a chip with nothing behind it shows no number', async () => {
@@ -1090,12 +1098,13 @@ export function registerUiCases() {
       const countOf = (level) =>
         chip(level).children.find((c) => c.classList.contains('chip-count')).textContent;
 
-      // The name-only model is free and has no published price, so it widens
-      // Tự quét 0đ to three while 0$ stays at the two models that actually
-      // publish a zero. The numbers have to move with the list, or the chips
-      // and the models on screen disagree.
+
+      // The name-only model is free, so it widens Free to three; it is not an
+      // unknown price, so Null stays empty and shows no number at all. The
+      // numbers have to move with the list, or the tabs and the models on
+      // screen disagree.
       assertEqual(countOf('free'), '3', 'all three are free');
-      assertEqual(countOf('zero'), '2', 'only the two that publish a price of zero');
+      assertEqual(countOf('unknown'), '', 'and none of them is an unknown price');
     });
 
     it('UI4: a priced model is never listed, whatever the filter', async () => {
@@ -1326,7 +1335,9 @@ export function registerUiCases() {
       await new Promise((r) => setTimeout(r, 250));
 
       // A global order would reorder the other URL's list too, which the user
-      // never asked for: the same model id can exist on several URLs.
+      // never asked for: the same model id can exist on several URLs. The list
+      // is narrowed to Gateway after the pick, so step back out to see it.
+      await clearScope(nodes);
       const other = rowsOfBlock(blockWithUrl(nodes, 'other.test')).map(modelNameOf);
       assertEqual(other.length, 1, 'the other URL still lists its own model');
       assertEqual(other[0], 'other-free', 'and its order was not rewritten by the first URL');
@@ -2701,6 +2712,37 @@ export function registerUiCases() {
       await tap(allBtn());
       assertEqual(lockedCount(), 0, 'tapping it again unlocks everything');
       assertEqual(allBtn().textContent, 'khoá tất cả', 'and the label comes back with the state');
+    });
+
+    it('UI57: picking a URL narrows the list to it, and the bar is the way back', async () => {
+      const nodes = installDom();
+      await seed();
+      await seedSecondUrl();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      // Every URL on one screen to begin with, and no bar, because there is
+      // nothing to clear yet.
+      assertEqual(urlBlocksOf(nodes).length, 2, 'both URLs are listed at once');
+      assertEqual(nodes.get('scopeBar').hidden, true, 'and the scope bar is hidden');
+
+      await openUrlInDrawer(nodes, 'Gateway');
+      assertEqual(urlBlocksOf(nodes).length, 1, 'picking one URL leaves only its block');
+      assert(
+        blockCopyOf(firstBlock(nodes)).textContent.includes('gw.test'),
+        'and it is the one that was picked: ' + blockCopyOf(firstBlock(nodes)).textContent
+      );
+      assertEqual(nodes.get('scopeBar').hidden, false, 'the bar appears with the pick');
+      assertEqual(nodes.get('scopeName').textContent, 'Gateway', 'and names the URL that is open');
+
+      // The tabs count what is on screen, so a count over a narrowed list cannot
+      // promise rows this view is hiding behind it.
+      const count = nodes.get('filterCount').textContent;
+      assert(count.includes('1 URL'), 'the count says one URL: ' + count);
+
+      await clearScope(nodes);
+      assertEqual(urlBlocksOf(nodes).length, 2, 'clearing brings every URL back');
+      assertEqual(nodes.get('scopeBar').hidden, true, 'and hides the bar again');
     });
   });
 }
