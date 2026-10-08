@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Free Model Hub</title>
-<link rel="stylesheet" href="./styles.css?v=18" />
+<link rel="stylesheet" href="./styles.css?v=19" />
 </head>
 <body>
 
@@ -380,8 +380,8 @@
 <dialog id="addUrlDialog" class="sheet sheet-form">
   <div class="sheet-grab" aria-hidden="true"></div>
   <div class="sheet-head">
-    <h3 class="dlg-title">Thêm URL</h3>
-    <p class="hint">Hợp thức tự giao thức OpenAI: GET /models, POST /chat/completions</p>
+    <h3 class="dlg-title" id="urlTitle">Thêm URL</h3>
+    <p class="hint" id="urlHint">Hợp thức tự giao thức OpenAI: GET /models, POST /chat/completions</p>
   </div>
   <div class="sheet-body">
     <label for="urlName">Tên</label>
@@ -393,6 +393,10 @@
     <label for="urlWebsite">Website <span class="optional">tuỳ chọn</span></label>
     <input id="urlWebsite" type="url" autocomplete="off" autocapitalize="off"
            autocorrect="off" spellcheck="false" placeholder="https://example.com" />
+    <!-- Only creation makes sense for these two. Editing an existing URL must
+         not silently add a model or a key, so the whole block is taken away
+         rather than emptied - a greyed field still reads as an invitation. -->
+    <div id="urlNewOnly">
     <label for="urlModels">Model ban đầu <span class="optional">mỗi dòng một model</span></label>
     <textarea id="urlModels" rows="3" autocomplete="off" autocapitalize="off"
               autocorrect="off" spellcheck="false"
@@ -401,10 +405,26 @@ model-free-2"></textarea>
     <label for="urlKey">API key ban đầu <span class="optional">tuỳ chọn</span></label>
     <input id="urlKey" type="password" autocomplete="off" autocapitalize="off"
            autocorrect="off" spellcheck="false" placeholder="dán key để dùng cho mọi model của URL" />
+    </div>
   </div>
   <div class="sheet-foot">
     <button id="urlConfirm" class="primary">Thêm + quét</button>
     <button id="urlCancel" class="small">Huỷ</button>
+  </div>
+</dialog>
+
+<dialog id="delUrlDialog" class="sheet sheet-form">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title">Xoá URL</h3>
+    <p class="hint" id="delUrlHint"></p>
+  </div>
+  <div class="sheet-body">
+    <div class="warnbox" id="delUrlWarn"></div>
+  </div>
+  <div class="sheet-foot">
+    <button id="delUrlConfirm" class="danger">Xoá</button>
+    <button id="delUrlCancel" class="small">Huỷ</button>
   </div>
 </dialog>
 
@@ -626,6 +646,6 @@ model-free-2"></textarea>
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="./app.js?v=18"></script>
+<script type="module" src="./app.js?v=19"></script>
 </body>
 </html>

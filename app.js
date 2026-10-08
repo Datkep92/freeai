@@ -20,7 +20,7 @@ import { CONFIG } from './core/config.js';
 import { Router } from './core/router.js';
 import { STATUS, STATUS_META } from './core/statuses.js';
 import { FREE, FREE_META, isFreeModel, isUnknownPrice } from './core/free-detector.js';
-import { fingerprintSecret, maskSecret } from './core/util.js';
+import { fingerprintSecret, maskSecret, normalizeBaseUrl } from './core/util.js';
 import { Priority, SCOPE, ROTATION, sortByPriority } from './core/priority.js';
 import { MetricsRegistry, formatMetric } from './core/metrics.js';
 import { KEY_REQ, KEY_REQ_META, groupByRequirement, requirementOf } from './core/key-requirement.js';
@@ -52,6 +52,7 @@ const ICONS = {
   check: '<path d="M20 6L9 17l-5-5"/>',
   trash: '<path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6m3 0v13.5A1.5 1.5 0 0 1 17.5 21h-11A1.5 1.5 0 0 1 5 19.5V6M10 11v6M14 11v6"/>',
   grip: '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>',
+  pencil: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3.2 9h17.6M3.2 15h17.6M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.8v.2"/>',
   dots: '<circle cx="12" cy="5.2" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="18.8" r="1.7"/>',
@@ -717,6 +718,9 @@ function urlActions(provider) {
   const step = Math.max(0, ROTATION_CHOICES.findIndex(([value]) => value === rotation));
 
   const actions = [
+    // The URL's own identity sits first: it is the one entry that acts on the
+    // row itself, and everything below it operates on what the row contains.
+    { icon: 'pencil', label: 'Sửa URL', sub: 'Đổi tên hoặc địa chỉ, không đụng model và key', run: () => openEditUrlDialog(provider) },
     { icon: 'scan', label: 'Quét lại URL này', sub: 'Lấy danh sách model mới nhất', run: () => scanOne(provider) },
     { icon: 'wrench', label: 'Quét nhiều model', sub: 'Mỗi model 0đ thử lần lượt các API của URL', run: () => openBulkDialog(provider) },
     { icon: 'info', label: 'Danh sách model free', sub: `${modelsHere.length} model 0đ · bấm để sửa/xoá/thêm`, run: () => openModelList(provider) },
@@ -756,6 +760,15 @@ function urlActions(provider) {
   }
   actions.push(
     { icon: 'copy', label: 'Chép base URL', sub: provider.baseURL, run: () => copyText(provider.baseURL, 'Đã chép URL') },
+    // Last, and the only red row: it is the one entry here that cannot be
+    // undone, so it sits below everything a user might reach for first.
+    {
+      icon: 'trash',
+      label: 'Xoá URL này',
+      sub: `${modelsHere.length} model · ${api} API · kết quả quét sẽ mất hết`,
+      danger: true,
+      run: () => openDeleteUrlDialog(provider),
+    },
   );
   return sheet(provider.name, `${provider.baseURL}${api ? ` · ${api} API` : ''}`, actions);
 }
@@ -2509,7 +2522,21 @@ async function restoreDeletedKey() {
 
 // ------------------------------------------------------- add url
 
+/**
+ * Which URL this sheet is rewriting, or null when it is adding one.
+ *
+ * The two modes share a sheet because they are the same form over the same
+ * row - a second dialog would drift from the first the moment either changed.
+ */
+let urlEditingId = null;
+
+/** Put the sheet back into "add" shape: every field present and empty. */
 function openAddUrlDialog() {
+  urlEditingId = null;
+  $('urlTitle').textContent = 'Thêm URL';
+  $('urlHint').textContent = 'Hợp thức tự giao thức OpenAI: GET /models, POST /chat/completions';
+  $('urlConfirm').textContent = 'Thêm + quét';
+  $('urlNewOnly').hidden = false;
   $('urlName').value = '';
   $('urlBase').value = '';
   $('urlWebsite').value = '';
@@ -2519,10 +2546,83 @@ function openAddUrlDialog() {
   $('urlBase').focus();
 }
 
+/**
+ * The same sheet as an edit, filled in.
+ *
+ * Only the identity fields are offered. "Model ban đầu" and "API key ban đầu"
+ * are actions taken when a URL is created; showing them here would invite a
+ * second model or a second key on a save that was meant to fix a typo, and the
+ * sheet's confirm would then do two unrelated things at once.
+ */
+function openEditUrlDialog(provider) {
+  urlEditingId = provider.id;
+  $('urlTitle').textContent = 'Sửa URL';
+  $('urlHint').textContent = 'Chỉ đổi tên và địa chỉ. Model, API key và kết quả quét giữ nguyên.';
+  $('urlConfirm').textContent = 'Lưu';
+  $('urlNewOnly').hidden = true;
+  $('urlName').value = provider.name ?? '';
+  $('urlBase').value = provider.baseURL ?? '';
+  $('urlWebsite').value = provider.websiteURL ?? '';
+  openSheet('addUrlDialog');
+  $('urlBase').focus();
+}
+
+/**
+ * Save an edited URL.
+ *
+ * The base URL is normalised and checked against every other row first, because
+ * `update` writes the patch as given: it has no duplicate check of its own, and
+ * two rows on one host would split that host's scan, key list and speed history
+ * between them.
+ */
+async function confirmEditUrl() {
+  const baseURL = normalizeBaseUrl($('urlBase').value.trim());
+  if (!baseURL) {
+    toast('Nhập Base URL');
+    return;
+  }
+
+  const id = urlEditingId;
+  const existing = await providers.findByUrl(baseURL);
+  if (existing && existing.id !== id) {
+    toast('URL này đã có trong danh sách');
+    return;
+  }
+
+  setBusy(true);
+  try {
+    const updated = await providers.update(id, {
+      name: $('urlName').value.trim(),
+      baseURL,
+      websiteURL: $('urlWebsite').value.trim(),
+    });
+    if (!updated) {
+      toast('Không tìm thấy URL này nữa');
+      return;
+    }
+    $('addUrlDialog').close();
+    log(`đã sửa ${updated.name}`);
+    toast('Đã lưu URL');
+    await render();
+    const saved = await providers.get(id);
+    if (saved && currentModel?.providerId === id) {
+      // The open card names its URL, so it has to be repainted rather than left
+      // showing the name the user just corrected.
+      await renderKeyRows(saved);
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function confirmAddUrl() {
   const baseURL = $('urlBase').value.trim();
   if (!baseURL) {
     toast('Nhập Base URL');
+    return;
+  }
+  if (urlEditingId) {
+    await confirmEditUrl();
     return;
   }
 
@@ -2589,6 +2689,61 @@ function parseManualModelList(value) {
     if (modelId) seen.add(modelId);
   }
   return [...seen];
+}
+
+// ------------------------------------------------------- delete url
+
+/**
+ * Confirm removing a URL and everything that hangs off it.
+ *
+ * A separate sheet from the key one rather than a reuse: deleting an API key is
+ * reversible through a pasted copy, deleting a URL removes the scan results,
+ * the keys and the speed history along with it, and the two sentences would not
+ * fit one dialog. The dialog says the counts out loud so the decision is made
+ * with the cost in front of the user instead of after the fact.
+ */
+async function openDeleteUrlDialog(provider) {
+  const [modelRows, keyRows] = await Promise.all([
+    models.list(provider.id),
+    keys.list(provider.id),
+  ]);
+  $('delUrlHint').textContent = `${provider.name} — ${provider.baseURL}`;
+  $('delUrlWarn').textContent = [
+    `Xoá URL này thì ${modelRows.length} model, ${keyRows.length} API key và toàn bộ kết quả quét, ` +
+    'thời gian nhanh/chậm của nó cũng bị xoá theo.',
+    'Không có thùng rác. Thêm lại URL này thì phải quét và kiểm tra key lại từ đầu.',
+  ].join(' ');
+  $('delUrlDialog').dataset.providerId = provider.id;
+  openSheet('delUrlDialog');
+}
+
+async function confirmDeleteUrl() {
+  const providerId = $('delUrlDialog').dataset.providerId;
+  const provider = await providers.get(providerId);
+  if (!provider) {
+    $('delUrlDialog').close();
+    return;
+  }
+
+  setBusy(true);
+  try {
+    await providers.remove(providerId);
+    // Nothing may keep pointing at a URL that no longer exists: the scope bar
+    // would keep naming it, the list would try to render its group, and a model
+    // card left open would offer keys that were just removed with it.
+    if (urlScope === providerId) urlScope = null;
+    if (focusProviderId === providerId) focusProviderId = null;
+    if (currentModel?.providerId === providerId) {
+      currentModel = null;
+      $('modelDialog').close();
+    }
+    $('delUrlDialog').close();
+    log(`đã xoá URL ${provider.name}`);
+    toast(`Đã xoá ${provider.name}`);
+    await render();
+  } finally {
+    setBusy(false);
+  }
 }
 
 // ------------------------------------------------------- add model
@@ -2940,7 +3095,12 @@ $('appbarAddUrl').addEventListener('click', () => {
 });
 $('btnScanAll').addEventListener('click', scanEverything);
 $('urlConfirm').addEventListener('click', confirmAddUrl);
-$('urlCancel').addEventListener('click', () => $('addUrlDialog').close());
+$('urlCancel').addEventListener('click', () => {
+  urlEditingId = null;
+  $('addUrlDialog').close();
+});
+$('delUrlConfirm').addEventListener('click', confirmDeleteUrl);
+$('delUrlCancel').addEventListener('click', () => $('delUrlDialog').close());
 $('btnAddKey').addEventListener('click', async () => {
   // Guarded: a stale dialog must not throw on a null currentModel.
   const provider = currentModel ? await providers.get(currentModel.providerId) : null;

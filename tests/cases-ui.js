@@ -28,7 +28,9 @@ const DOM_IDS = [
   'modelHint', 'boxUrl', 'boxModel', 'keyRows', 'keyCount', 'btnCheckOne', 'btnAddKey',
   'modelClose', 'keyDialog', 'keyHint', 'keySecret', 'keyConfirm', 'keyCancel',
   'delDialog', 'delHint', 'delSecret', 'delConfirm', 'delRestore', 'delCancel',
-  'addUrlDialog', 'urlName', 'urlBase', 'urlConfirm', 'urlCancel',
+  'addUrlDialog', 'urlTitle', 'urlHint', 'urlNewOnly',
+  'urlName', 'urlBase', 'urlWebsite', 'urlModels', 'urlKey', 'urlConfirm', 'urlCancel',
+  'delUrlDialog', 'delUrlHint', 'delUrlWarn', 'delUrlConfirm', 'delUrlCancel',
   'modelAddDialog', 'manualHint', 'manualModel', 'manualFree', 'manualConfirm', 'manualCancel',
   'sidebar', 'sidebarRoot', 'btnMenu', 'scrim', 'btnAddUrl', 'treeTitle', 'urlSort',
   'urlSearch', 'urlSearchClear', 'urlClass', 'urlSortFree', 'sideHint',
@@ -296,7 +298,7 @@ function installDom() {
   // with everything tagged div the "close the other sheet" path finds nothing and
   // the test that checks two sheets never stack passes for the wrong reason.
   const DIALOG_IDS = new Set([
-    'modelDialog', 'keyDialog', 'delDialog', 'addUrlDialog', 'modelAddDialog', 'rowMenu',
+    'modelDialog', 'keyDialog', 'delDialog', 'delUrlDialog', 'addUrlDialog', 'modelAddDialog', 'rowMenu',
     'testDialog', 'bulkDialog',
   ]);
   const nodes = new Map(
@@ -3015,6 +3017,107 @@ export function registerUiCases() {
       await tap(nodes.get('aiClear'));
       assertEqual(nodes.get('aiLog').children.length, 0, 'the log is empty again');
       assert(nodes.get('aiBudget').textContent.includes('19.958'), 'and the spend was not refunded');
+    });
+
+    it('UI65: a long press on a URL offers to edit it and to delete it', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      const row = drawerRow(nodes, 'Gateway');
+      await longPressRow(row);
+
+      const all = nodes.get('rowMenuActions').children.map((c) => c.textContent).join(' | ');
+      assert(all.includes('Sửa URL'), 'edit: ' + all);
+      // Named after the thing being deleted rather than "Xoá", which the same
+      // sheet also carries for the URL's own settings - two entries that differ
+      // only by their sub-line are how the wrong one gets tapped.
+      assert(all.includes('Xoá URL này'), 'delete: ' + all);
+
+      const del = nodes.get('rowMenuActions').children.find((c) => c.textContent.includes('Xoá URL này'));
+      assert(del.classList.contains('danger'), 'the delete row is the red one');
+    });
+
+    it('UI66: editing a URL rewrites the same row and leaves its data alone', async () => {
+      const nodes = installDom();
+      const { provider, models } = await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+      const modelsBefore = (await models.list(provider.id)).length;
+
+      const row = drawerRow(nodes, 'Gateway');
+      await longPressRow(row);
+      const edit = nodes.get('rowMenuActions').children.find((c) => c.textContent.includes('Sửa URL'));
+      await tap(edit);
+
+      assertEqual(nodes.get('addUrlDialog').open, true, 'the sheet opened');
+      assertEqual(nodes.get('urlTitle').textContent, 'Sửa URL', 'and it is in edit shape');
+      assertEqual(nodes.get('urlConfirm').textContent, 'Lưu', 'the confirm says save, not add');
+      // The creation-only fields have to be gone rather than blank: a visible
+      // "API key ban đầu" on an edit invites a second key for the same URL.
+      assertEqual(nodes.get('urlNewOnly').hidden, true, 'the creation-only fields are not offered');
+      assertEqual(nodes.get('urlName').value, 'Gateway', 'the name is prefilled');
+      assertEqual(nodes.get('urlBase').value, provider.baseURL, 'and so is the base URL');
+
+      nodes.get('urlName').value = 'Gateway da sua';
+      await tap(nodes.get('urlConfirm'));
+      await new Promise((r) => setTimeout(r, 350));
+
+      assertEqual(nodes.get('addUrlDialog').open, false, 'the sheet closed on save');
+      const names = drawerNames(nodes);
+      assert(names.includes('Gateway da sua'), 'the drawer shows the new name: ' + names.join(','));
+      assertEqual(names.includes('Gateway'), false, 'and not the old one');
+
+      // The seed store is only where the fixture was built; the app writes to
+      // its own storage, and reading the fixture back would let a rename that
+      // never happened pass this.
+      const store = globalThis.__FMH_STORAGE__;
+      const stored = await store.list('providers');
+      const mine = stored.filter((p) => p.id === provider.id);
+      assertEqual(mine.length, 1, 'and it is still one URL, not a second one');
+      assertEqual(mine[0].name, 'Gateway da sua', 'the rename is in storage');
+      const rows = (await store.list('models')).filter((m) => m.providerId === provider.id);
+      assertEqual(rows.length, modelsBefore, 'the models were not touched by a rename');
+    });
+
+    it('UI67: deleting a URL takes its models and keys with it, and only after a confirm', async () => {
+      const nodes = installDom();
+      const { provider } = await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      const row = drawerRow(nodes, 'Gateway');
+      await longPressRow(row);
+      const del = nodes.get('rowMenuActions').children.find((c) => c.textContent.includes('Xoá URL này'));
+      await tap(del);
+
+      // Nothing is gone yet: the tap only asks.
+      const store = () => globalThis.__FMH_STORAGE__;
+      const mine = async () => (await store().list('providers')).filter((p) => p.id === provider.id);
+      assertEqual(nodes.get('delUrlDialog').open, true, 'a confirm sheet opens first');
+      assertEqual((await mine()).length, 1, 'and nothing is removed by opening it');
+      const warn = nodes.get('delUrlWarn').textContent;
+      assert(warn.includes('3 model'), 'the sheet counts the models that go with it: ' + warn);
+      assert(warn.includes('2 API key'), 'and the keys: ' + warn);
+      assert(warn.includes('Không có thùng rác'), 'and says it is permanent: ' + warn);
+
+      await tap(nodes.get('delUrlCancel'));
+      assertEqual((await mine()).length, 1, 'cancel leaves everything in place');
+
+      await tap(nodes.get('delUrlConfirm'));
+      await new Promise((r) => setTimeout(r, 400));
+      assertEqual(nodes.get('delUrlDialog').open, false, 'the sheet closed');
+      assertEqual((await mine()).length, 0, 'the URL is gone');
+      const modelsLeft = (await store().list('models')).filter((m) => m.providerId === provider.id);
+      assertEqual(modelsLeft.length, 0, 'its models went with it');
+      const keysLeft = (await store().list('keys')).filter((k) => k.providerId === provider.id);
+      assertEqual(keysLeft.length, 0, 'its keys went with it');
+      assertEqual(
+        drawerNames(nodes).includes('Gateway'),
+        false,
+        'and the drawer no longer lists it: ' + drawerNames(nodes).join(',')
+      );
     });
   });
 }

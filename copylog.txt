@@ -15,6 +15,28 @@ FILES CREATED:
 - scripts/mock-provider.js   (provider giả lập, node:net, không dependency, có CORS + SSE)
 - core/export-config.js     (module thuần: dựng "cấu hình đang hoạt động" từ các mapping HEALTHY
                             rồi xuất ra .env / JSON / YAML)
+- core/agent.js             (module thuần: AGENT_SYSTEM + class Agent — phiên hội thoại, ghép messages,
+                            clamp token theo ngân sách, cộng `spent` từ usage provider báo cáo)
+
+FILES CHANGED (lượt Trợ lý AI + Sửa/Xoá URL):
+- core/config.js            thêm CONFIG.agent { maxTokensPerCall, maxTotalTokens, defaultTemperature }
+- core/adapters/base.js     buildChatRequest nhận thêm messages/temperature; thêm streamChat() và
+                            readStream() gộp delta.tool_calls theo index (tool_calls chưa dùng tới)
+- core/router.js            tách _recordSuccess(); thêm streamChat() tái dùng candidates() + cooldown
+                            + circuit breaker + metrics → tự xoay khi key hết hạn/hết quota
+- app.js                    tab "Trợ lý AI" (stream + ngân sách + DỪNG + XOÁ); menu ấn-giữ URL thêm
+                            "Sửa URL" (dòng đầu) và "Xoá URL này" (dòng cuối, đỏ);
+                            openEditUrlDialog/confirmEditUrl/openDeleteUrlDialog/confirmDeleteUrl
+- index.html                #paneAI + tab AI + tabbar "AI"; #urlTitle / #urlHint / #urlNewOnly cho
+                            chế độ sửa; sheet #delUrlDialog; ?v=19
+- styles.css                .aihead/.aiwho/.aibudget/.ailog/.aibub/.aitext/.aiform
+- sw.js                     cache fmh-v21 → fmh-v22, thêm ./core/agent.js vào SHELL
+- tests/cases-ui.js         DOM_IDS nhận id AI + id của sheet sửa/xoá URL; tabbar stub thêm "ai";
+                            UI64 (bong bóng stream + ngân sách), UI65 (menu có Sửa/Xoá URL),
+                            UI66 (sửa URL không đụng model/key), UI67 (xoá phải xác nhận, cascade)
+- tests/cases-verify.js     AG1–AG4: stream từng mảnh, xoay key 401, "partial" khác "failure",
+                            ngân sách hết thì từ chối
+- uicheck.mjs               registry nhận id AI + id sheet sửa/xoá URL
 
 FILES CHANGED:
 - core/free-detector.js   thêm isFreeModel() và isUnknownPrice() — định nghĩa "0đ" dùng chung
@@ -157,24 +179,65 @@ TINH CHỈNH NÚT + XUẤT CẤU HÌNH (lượt này):
   (không hỗ trợ tải được thì tự rơi về chép vào clipboard).
   Bản xuất KHÔNG bao giờ đi vào log; nó chỉ hiện ở ô #exportOut của sheet người dùng chủ động mở.
 
+TRỢ LÝ AI + SỬA/XOÁ URL TỪ NGĂN KÉO (lượt này):
+- Tab "Trợ lý AI" (nút thứ 4 trên thanh tab, tabbar "AI"): gọi model THẬT qua Router, stream từng
+  token vào bong bóng, và đếm ngân sách token của phiên. Nhân vật mới là core/agent.js:
+    * AGENT_SYSTEM ngắn, tiếng Việt, cấm bịa thông tin về model/URL/API;
+    * messagesFor(history, userText) = system + lịch sử + câu hỏi — dạng {role, content} thuần,
+      mọi provider OpenAI-compatible đều nhận;
+    * turn() clamp maxTokens theo phần ngân sách còn lại, cộng `spent` từ usage mà CHÍNH provider
+      báo cáo (fallback = trần đã clamp, để provider không báo usage vẫn không làm ngân sách
+      có vẻ nguyên vẹn); hết ngân sách → {ok:false, reason:'BUDGET_EXHAUSTED'} cho lần sau.
+  core/router.js thêm streamChat(): tái dùng candidates() + cooldown + circuit breaker + metrics,
+  nên TỰ ĐỘNG XOAY khi key hết hạn (401) / hết quota (402) / bị chặn (403) — quay sang key khác,
+  rồi model khác, rồi URL khác, tối đa maxAttempts. Quy tắc: stream ĐÃ phát token thì KHÔNG đổi
+  model giữa câu (dựng nửa câu của model này + nửa câu của model kia thành câu khác) → trả
+  {ok:false, reason:'PARTIAL', partial:true} để UI giữ nguyên phần đã hiện.
+  core/adapters/base.js thêm streamChat() + readStream(); readStream đọc SSE, ghép delta.tool_calls
+  theo `index` (slot {id,name,arguments}) và trả {content, toolCalls, finishReason, ttftMs, usage}.
+  core/config.js thêm CONFIG.agent { maxTokensPerCall: 1024, maxTotalTokens: 20000, defaultTemperature: 0.3 }.
+  Ô nhập: Enter là xuống dòng, Ctrl/⌘+Enter gửi; nút DỪNG huỷ giữa vòng lặp; nút XOÁ xoá hội thoại
+  nhưng KHÔNG hoàn ngân sách — token đã tiêu là đã tiêu.
+- SỬA URL / XOÁ URL từ ngăn kéo (ấn-giữ lên hàng URL, sheet của chính URL đó):
+  * "Sửa URL" đứng ĐẦU sheet: mở lại dialog thêm-URL ở chế độ SỬA. Tiêu đề ("Sửa URL"), gợi ý
+    ("Chỉ đổi tên và địa chỉ. Model, API key và kết quả quét giữ nguyên.") và nhãn nút
+    ("Lưu") tự đổi; 2 ô "Model ban đầu" / "API key ban đầu" bị ẨN hẳn trong khối #urlNewOnly
+    chứ không phải làm trống — một field vẫn hiện thì vẫn là lời mời thêm key/model
+    trong lần lưu chỉ định sửa một lỗi gõ.
+    Base URL được normalizeBaseUrl() + chống trùng (findByUrl, trừ chính nó) trước khi
+    providers.update(), vì update ghi patch thẳng, không có kiểm tra trùng của riêng nó:
+    hai hàng trùng một host sẽ tách đôi lịch sử quét, danh sách key và thời gian nhanh/chậm.
+  * "Xoá URL này" ở CUỐI sheet, dòng đỏ DUY NHẤT (danger) — dưới mọi hành động người ta hay bấm
+    trước. Sheet xác nhận nêu ĐÚNG số lượng ("9 model, 1 API key … cũng bị xoá theo"), nhấn mạnh
+    không có thùng rác và thêm lại thì phải quét lại từ đầu. Bấm Xoá mới xoá;
+    providers.remove() cascade theo schema nên model/key/mapping/metrics của URL đó đi cùng.
+    Sau khi xoá: urlScope, focusProviderId và currentModel (nếu trỏ vào URL vừa xoá) được reset
+    để thanh lọc-theo-URL và thẻ model đang mở không trỏ vào thứ đã mất.
+  * Cả hai đều nằm trong sheet ấn-giữ của ngăn kéo, và chỉ ở đó — không thêm nút nào lên hàng.
+
 TEST RESULTS:
-- npm test        309/309 PASS   (exit 0; thêm EX1–EX4 cho core/export-config.js (chỉ xuất endpoint
-                  có mapping HEALTHY, tôn trọng khoá, .env/JSON/YAML cùng một bức tranh),
-                  UI62 nút CHECK trong danh sách API, UI63 sheet xuất cấu hình + đổi định dạng)
+- npm test        317/317 PASS   (exit 0; thêm AG1–AG4 cho core/agent.js + Router.streamChat,
+                  UI64 (bong bóng AI nhận stream và trừ đúng 42 token báo về, xoá hội thoại không
+                  hoàn ngân sách), UI65 (menu ấn-giữ URL có "Sửa URL" và "Xoá URL này", dòng
+                  xoá là dòng đỏ), UI66 (sửa URL: prefill đúng, 2 ô tạo-mới bị ẩn, lưu xong đổi tên
+                  trên ngăn kéo + storage, không sinh URL thứ hai, model giữ nguyên),
+                  UI67 (xoá: mở sheet chưa mất gì, Huỷ giữ nguyên, Xoá mới cascade hết);
+                  EX1–EX4 trước đó vẫn xanh)
 - npm run uicheck PASS           (exit 0; render app.js thật, 0 dòng "LOI";
-                  "bam dong model -> mo the thong tin: OK", "bam API -> mo o chat: OK",
-                  "nut xuat cau hinh -> mo sheet: OK", "lo secret tren dong: khong")
-- node --check app.js + core/export-config.js SYNTAX OK
-- Browser thật (http://localhost:8788): hàng model không còn glyph .taphint (chỉ còn free · mid · speed),
-  có nút "Check nhanh …"; danh sách API mỗi dòng có "Check API này"; nút "XUẤT CẤU HÌNH" mở sheet,
-  .env chứa OPENAI_BASE_URL (URL mock đang chạy) + dòng API_KEY, đổi sang JSON thì JSON.parse được
-  và default.baseURL đúng; CHÉP và TẢI FILE chạy không lỗi (các lỗi console là do app quét provider
-  thật bị CORS/401 trong sandbox, không liên quan).
+                  "render() chay khong loi", "nut xuat cau hinh -> mo sheet: OK")
+- node --check app.js + sw.js SYNTAX OK
+- Browser thật (http://localhost:8788/?v=19): 4 tab gồm "Trợ lý AI" và tabbar 5 nút gồm "AI",
+  #aiBudget hiện "20.000 token còn lại"; ấn-giữ hàng URL mở sheet với "Sửa URL" là dòng đầu và
+  "Xoá URL này" dòng cuối (danger); mở Sửa → tiêu đề/nhãn đổi, #urlNewOnly ẩn thật
+  (getBoundingClientRect().height = 0), 2 ô model/key không hiện, values đúng; Huỷ xong mở
+  "+ URL" thì 2 ô đó hiện lại. Vòng lặp TẠO → SỬA (đổi tên) → XOÁ trên một URL tạm
+  (http://localhost:8799/v2) chạy trọn vẹn và để lại đúng 24 URL như trước — không mất dữ liệu thật.
+  Console chỉ có 1 lỗi 404 là GET /v2/models của chính URL tạm khi quét.
   (Ảnh chụp màn hình không chụp được do webview của host không composited — đã xác minh bằng DOM.)
 
 BUILD RESULT:
-Không có bước build (web tĩnh). Shell đã đổi nên sw.js bump lên fmh-v20 và index.html ?v=17
-(cả styles.css và app.js); thêm ./core/export-config.js vào SHELL của service worker.
+Không có bước build (web tĩnh). Shell đã đổi nên sw.js bump lên fmh-v22 và index.html ?v=19
+(cả styles.css và app.js); thêm ./core/agent.js vào SHELL của service worker.
 
 HOW TO RUN:
   npm start                 # UI: http://localhost:8788
@@ -189,9 +252,9 @@ KNOWN ISSUES:
   Đây là lựa chọn đã chốt ("ẩn khỏi danh sách, vẫn lưu"), nhưng nếu nhà cung cấp không công bố giá
   thì không loại trừ được khả năng đó là bản tính phí. Muốn chặn hẳn thì cần một công tắc trong core/config.js.
 - Đã kiểm chứng đầu-cuối bằng mock provider, chưa bằng key thật của provider thật.
-- Các thay đổi của hai lượt gần nhất (xây dựng lại UI: danh sách model/API, nút ✓ CHECK, ô chat,
-  runAcrossKeys; tinh chỉnh nút + xuất cấu hình .env/JSON/YAML) CHƯA commit;
-  cây làm việc đang giữ chúng cùng các commit trước đó.
+- Ô chat gửi văn bản người dùng nhập tới provider thật; đã kiểm bằng mock, chưa bằng key thật.
+- Tab Trợ lý AI đã kiểm bằng mock provider (stream, ngân sách, xoay key 401). Chưa chạy với key thật;
+  tool-calling đã đọc được delta.tool_calls nhưng CHƯA có tool nào để gọi — đó là P2.
 - Ô chat gửi văn bản người dùng nhập tới provider thật; đã kiểm bằng mock, chưa bằng key thật.
 - Ô tìm URL, bộ lọc URL và thanh lọc-theo-URL là trạng thái tạm của phiên (không lưu storage):
   mở lại app là về "Tất cả". Đây là lựa chọn có chủ ý — một bộ lọc còn sót lại sẽ khiến
@@ -199,5 +262,10 @@ KNOWN ISSUES:
 
 NEXT STEP:
 - Dùng key thật trên một URL thật để xác nhận đầu-cuối ngoài đời.
+- P2 tab Trợ lý AI: tool đọc dữ liệu (list_urls / list_models / get_metrics / get_health / scan_url /
+  export_config / check_api) + điều khiển app, tool mutate có xác nhận, tool chỉ nhận dữ liệu đã lọc
+  (không bao giờ đưa key.secret vào prompt).
+- P5: cầu nối local POST /api/exec trong scripts/serve.js, bind 127.0.0.1, cờ bật riêng, token
+  in ra console — tool run_command chỉ tồn tại khi cầu nối bật.
 - Nếu muốn: thêm công tắc chặn hẳn việc thử model không công bố giá.
 ==================================================
