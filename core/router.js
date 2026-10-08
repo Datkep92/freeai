@@ -224,31 +224,7 @@ export class Router {
           const content =
             payload?.choices?.[0]?.message?.content ?? payload?.choices?.[0]?.text ?? '';
 
-          await this.mapper.record(candidate.mapping.id, { ok: true, latencyMs });
-
-          // A real request is the best speed sample there is, so its numbers are
-          // recorded here too. Without this the ranking would only ever know
-          // about models the user happened to run a "check API" on, and every
-          // other model would sort as unknown forever.
-          //
-          // Time to first token is unavailable on a non-streaming call, so it
-          // stays null rather than being back-calculated from the total.
-          if (this.metrics) {
-            await this.metrics.record(
-              candidate.provider.id,
-              candidate.mapping.modelId,
-              measure({ payload, totalMs: latencyMs, ttftMs: null })
-            );
-          }
-          await this.storage.put('keys', {
-            ...candidate.key,
-            status: STATUS.HEALTHY,
-            lastSuccessAt: isoNow(),
-            updatedAt: isoNow(),
-          });
-          await this.providers.update(candidate.provider.id, {
-            breaker: recordProviderSuccess(candidate.provider.breaker),
-          });
+          await this._recordSuccess(candidate, { payload, latencyMs });
 
           onEvent?.({ stage: 'success', provider: candidate.provider.name, model: candidate.mapping.modelId, latencyMs });
           return { ok: true, content, provider: candidate.provider.name, model: candidate.mapping.modelId, latencyMs, tried };
@@ -288,6 +264,157 @@ export class Router {
     }
 
     return { ok: false, reason: 'ALL_ATTEMPTS_FAILED', tried };
+  }
+
+  /**
+   * Serve a streamed chat turn, walking the same fallback chain as complete().
+   *
+   * The rotation is deliberately not reimplemented: candidates(), cooldown,
+   * the circuit breaker, the key/model/provider fallback and lazy learning are
+   * the same code the console and the verifier already trust. Only the transport
+   * differs - tokens go out through `onToken` as they arrive.
+   *
+   * One rule is new, and it is about honesty rather than plumbing: a stream that
+   * has already emitted text is never retried on another model. Swapping models
+   * after the user has seen half an answer would splice two replies together
+   * with no seam, so a failure past the first token is reported as partial. The
+   * failure is still recorded, so the next call starts from better information.
+   */
+  async streamChat({
+    messages,
+    modelId = null,
+    freeOnly = true,
+    maxTokens = 256,
+    maxAttempts = 4,
+    timeoutMs = CONFIG.probeTimeoutMs,
+    onToken,
+    onEvent,
+    run,
+  } = {}) {
+    const tried = [];
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const excluded = new Set(tried.map((t) => t.mappingId));
+      const all = (await this.candidates({ freeOnly, modelId })).filter(
+        (c) => !excluded.has(c.mapping.id)
+      );
+      if (!all.length) {
+        return { ok: false, reason: 'NO_ELIGIBLE_MAPPING', tried };
+      }
+
+      const sameModel = all.find((c) => c.mapping.modelId === (tried.at(-1)?.modelId ?? c.mapping.modelId));
+      const candidate = sameModel ?? all[0];
+      const adapter = createAdapter(candidate.provider);
+
+      onEvent?.({ stage: 'attempt', provider: candidate.provider.name, model: candidate.mapping.modelId });
+      const startedAt = Date.now();
+      let emitted = false;
+
+      try {
+        const result = await adapter.streamChat({
+          model: candidate.mapping.modelId,
+          secret: candidate.key.secret,
+          messages,
+          maxTokens,
+          timeoutMs,
+          onToken: (delta) => {
+            emitted = true;
+            onToken?.(delta);
+          },
+        });
+
+        if (result.ok) {
+          await this._recordSuccess(candidate, { payload: result.payload, latencyMs: result.latencyMs });
+          onEvent?.({ stage: 'success', provider: candidate.provider.name, model: candidate.mapping.modelId, latencyMs: result.latencyMs });
+          return {
+            ok: true,
+            content: result.content ?? '',
+            toolCalls: result.toolCalls ?? [],
+            finishReason: result.finishReason ?? null,
+            provider: candidate.provider.name,
+            providerId: candidate.provider.id,
+            keyId: candidate.key.id,
+            model: candidate.mapping.modelId,
+            latencyMs: result.latencyMs,
+            ttftMs: result.ttftMs ?? null,
+            // Only the usage is carried out: the session sums it for its budget,
+            // and the whole payload is not something a caller needs.
+            usage: result.payload?.usage ?? null,
+            tried,
+          };
+        }
+
+        tried.push({
+          mappingId: candidate.mapping.id,
+          providerId: candidate.provider.id,
+          modelId: candidate.mapping.modelId,
+          status: result.status,
+        });
+
+        await this._recordFailure(
+          candidate,
+          { status: result.status, scope: result.scope, message: result.error, retryAfterMs: result.retryAfterMs },
+          Date.now() - startedAt
+        );
+        onEvent?.({ stage: 'failed', provider: candidate.provider.name, model: candidate.mapping.modelId, status: result.status });
+
+        if (emitted) {
+          return { ok: false, reason: 'PARTIAL', status: result.status, partial: true, tried };
+        }
+      } catch (error) {
+        tried.push({
+          mappingId: candidate.mapping.id,
+          providerId: candidate.provider.id,
+          modelId: candidate.mapping.modelId,
+          status: STATUS.TEMP_ERROR,
+        });
+        await this.mapper.record(candidate.mapping.id, {
+          ok: false,
+          status: STATUS.TEMP_ERROR,
+          error: sanitizeError(error.message ?? '', [candidate.key.secret]),
+          latencyMs: Date.now() - startedAt,
+        });
+        onEvent?.({ stage: 'failed', provider: candidate.provider.name, error: error.message });
+        if (emitted) return { ok: false, reason: 'PARTIAL', status: STATUS.TEMP_ERROR, partial: true, tried };
+      }
+
+      if (run?.cancelled()) return { ok: false, reason: 'CANCELLED', tried };
+    }
+
+    return { ok: false, reason: 'ALL_ATTEMPTS_FAILED', tried };
+  }
+
+  /**
+   * Write what a successful request proves, in one place.
+   *
+   * A real request is the best speed sample there is, so its numbers are
+   * recorded here too: without this the ranking would only ever know about
+   * models the user happened to run a "check API" on, and every other model
+   * would sort as unknown forever. Time to first token is unavailable on a
+   * non-streaming call, so it stays null rather than being back-calculated.
+   *
+   * Extracted rather than inlined at both call sites so a streamed turn and a
+   * plain one cannot drift into disagreeing about what "healthy" writes.
+   */
+  async _recordSuccess(candidate, { payload, latencyMs }) {
+    await this.mapper.record(candidate.mapping.id, { ok: true, latencyMs });
+
+    if (this.metrics) {
+      await this.metrics.record(
+        candidate.provider.id,
+        candidate.mapping.modelId,
+        measure({ payload, totalMs: latencyMs, ttftMs: null })
+      );
+    }
+    await this.storage.put('keys', {
+      ...candidate.key,
+      status: STATUS.HEALTHY,
+      lastSuccessAt: isoNow(),
+      updatedAt: isoNow(),
+    });
+    await this.providers.update(candidate.provider.id, {
+      breaker: recordProviderSuccess(candidate.provider.breaker),
+    });
   }
 
   /**

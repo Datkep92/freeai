@@ -11,6 +11,8 @@ import { classifyErrorProbe } from './helpers.js';
 import { STATUS } from '../core/statuses.js';
 import { FREE } from '../core/free-detector.js';
 import { createMockFetch } from './mock-fetch.js';
+import { buildExport, formatExport } from '../core/export-config.js';
+import { Agent } from '../core/agent.js';
 
 // Synthetic fixtures only.
 const KEY_A = 'oc_sk_A1b2C3d4E5f6G7h8I9j0';
@@ -472,6 +474,256 @@ export function registerVerifyCases() {
       // quota the user already spent.
       const rows = await mapper.list(provider.id);
       assertEqual(rows.length, r.results.length, 'and every result it reported was written');
+    });
+  });
+
+  describe('BK. Many models against many keys', () => {
+    /** A provider with `secrets` keys and `modelIds`, ready for a run across keys. */
+    async function setupMulti(modelIds, { chat, secrets = [KEY_A, KEY_B] } = {}) {
+      const mock = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': chat ?? { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      globalThis.fetch = mock;
+
+      const storage = new MemoryStorage();
+      const providers = new ProviderRegistry(storage);
+      const registry = new ModelRegistry(storage);
+      const keys = new KeyRegistry(storage);
+      const mapper = new Mapper(storage);
+
+      const { provider } = await providers.upsert({ name: 'M', baseURL: 'https://m.test/v1' });
+      for (const id of modelIds) {
+        await registry.upsertDiscovered({
+          providerId: provider.id,
+          modelId: id,
+          pricing: { prompt: '0', completion: '0' },
+        });
+      }
+      const keyRows = [];
+      for (const secret of secrets) keyRows.push((await keys.add({ providerId: provider.id, secret })).key);
+
+      const prober = new BulkProbe(storage, { providers, models: registry, mapper });
+      return { mock, storage, providers, models: registry, keys, mapper, provider, keyRows, prober };
+    }
+
+    it('BK1: a model is asked once, and a working first key stops the loop', async () => {
+      const { mock, provider, keyRows, prober } = await setupMulti(['m1', 'm2']);
+      mock.reset();
+      const r = await prober.runAcrossKeys({ providerId: provider.id, keyIds: keyRows.map((k) => k.id), limit: 10 });
+
+      assertEqual(r.healthy, 2, 'both models answered');
+      assertEqual(r.requests, 2, 'one request per model, not one per key');
+      assertEqual(r.results.every((e) => e.keyId === keyRows[0].id), true, 'the first key answered both');
+    });
+
+    it('BK2: when the first key is refused the model falls through to the next key', async () => {
+      const { mock, provider, keyRows, prober } = await setupMulti(['blocked', 'fine'], {
+        chat: (url, options) =>
+          String(options.headers?.Authorization ?? '').includes(KEY_A)
+            ? { status: 401, body: { error: { message: 'invalid api key' } } }
+            : { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      mock.reset();
+      const r = await prober.runAcrossKeys({ providerId: provider.id, keyIds: keyRows.map((k) => k.id), limit: 10 });
+
+      assertEqual(r.results.length, 2, 'a verdict for every model');
+      assertEqual(r.results.every((e) => e.ok), true, 'and both usable, thanks to the second key');
+      assertEqual(r.results.every((e) => e.keyId === keyRows[1].id), true, 'recorded against the key that worked');
+    });
+
+    it('BK3: a paid model is never probed by a run across keys either', async () => {
+      const storage = new MemoryStorage();
+      const providers = new ProviderRegistry(storage);
+      const registry = new ModelRegistry(storage);
+      const keys = new KeyRegistry(storage);
+      const mapper = new Mapper(storage);
+      const mock = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      globalThis.fetch = mock;
+
+      const { provider } = await providers.upsert({ name: 'P', baseURL: 'https://p.test/v1' });
+      await registry.upsertDiscovered({ providerId: provider.id, modelId: 'free-one', pricing: { prompt: '0', completion: '0' } });
+      await registry.upsertDiscovered({ providerId: provider.id, modelId: 'expensive', pricing: { prompt: '1', completion: '2' } });
+      const { key } = await keys.add({ providerId: provider.id, secret: KEY_A });
+
+      const prober = new BulkProbe(storage, { providers, models: registry, mapper });
+      mock.reset();
+      await prober.runAcrossKeys({ providerId: provider.id, keyIds: [key.id], limit: 10 });
+
+      assertEqual(requestedModels(mock).includes('expensive'), false, 'the paid model was never called');
+    });
+
+    it('BK4: a key that fails everywhere is retired once, and the run stops when none are left', async () => {
+      const { mock, provider, keyRows, prober, storage } = await setupMulti(
+        Array.from({ length: 20 }, (_, i) => `m${i}`),
+        { chat: refuseAll(401, 'invalid api key') }
+      );
+      mock.reset();
+      const r = await prober.runAcrossKeys({ providerId: provider.id, keyIds: keyRows.map((k) => k.id), limit: 20 });
+
+      assertEqual(r.stopped, true, 'the run stopped itself');
+      // Five failures per key retire it, and there are two keys: ten requests,
+      // not forty. Without retirement the dead key would be re-asked on every
+      // one of the twenty models.
+      assertEqual(r.requests, 10, 'each key burned its streak once, then stopped being asked');
+      const after = await storage.get('keys', keyRows[0].id);
+      assertEqual(after.status, STATUS.AUTH_INVALID, 'and the dead key is marked');
+    });
+  });
+
+  describe('EX. Exporting the working configuration', () => {
+    const rows = () => ({
+      providers: [
+        { id: 'p1', name: 'Gate One', baseURL: 'https://a.test/v1' },
+        { id: 'p2', name: 'Untried', baseURL: 'https://b.test/v1' },
+      ],
+      keys: [
+        { id: 'k1', secret: KEY_A, masked: 'oc…I9j0' },
+        { id: 'k2', secret: KEY_B, masked: 'oc…R1q0' },
+      ],
+      models: [{ id: 'm1', providerId: 'p1', modelId: 'free-one' }],
+      mappings: [
+        { providerId: 'p1', modelId: 'free-one', keyId: 'k1', status: STATUS.HEALTHY },
+        { providerId: 'p2', modelId: 'some-model', keyId: 'k2', status: STATUS.UNTESTED },
+      ],
+      exportedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    it('EX1: only an endpoint with a proven mapping is exported, with the key that proved it', async () => {
+      const data = buildExport(rows());
+
+      assertEqual(data.endpoints.length, 1, 'only the proven URL is exported');
+      assertEqual(data.endpoints[0].baseURL, 'https://a.test/v1', 'and it is the right one');
+      assertEqual(data.endpoints[0].apiKey, KEY_A, 'carrying the key that answered');
+      assertEqual(data.endpoints[0].model, 'free-one', 'and the model that answered');
+      assertEqual(data.default.baseURL, 'https://a.test/v1', 'the first endpoint is the default');
+    });
+
+    it('EX2: the .env names the default and one prefixed block per URL', async () => {
+      const env = formatExport(buildExport(rows()), 'env');
+
+      assert(env.includes('OPENAI_BASE_URL=https://a.test/v1'), 'the default block: ' + env);
+      assert(env.includes(`OPENAI_API_KEY=${KEY_A}`), 'with the key');
+      assert(env.includes('OPENAI_MODEL=free-one'), 'and the model');
+      // A second URL is reachable too, under its own prefix, so a multi-URL
+      // setup survives the flat .env format.
+      assert(env.includes('GATE_ONE_BASE_URL=https://a.test/v1'), 'the per-URL block: ' + env);
+    });
+
+    it('EX3: json and yaml carry the same picture as env', async () => {
+      const data = buildExport(rows());
+
+      const parsed = JSON.parse(formatExport(data, 'json'));
+      assertEqual(parsed.default.baseURL, 'https://a.test/v1', 'json default baseURL');
+      assertEqual(parsed.default.apiKey, KEY_A, 'json carries the key');
+      assertEqual(parsed.endpoints.length, 1, 'json carries the endpoint list');
+
+      const yaml = formatExport(data, 'yaml');
+      assert(yaml.includes('apiKey:'), 'yaml names the key field: ' + yaml);
+      assert(yaml.includes('https://a.test/v1'), 'and the URL');
+    });
+
+    it('EX4: a locked key, model or URL is left out of the file', async () => {
+      const base = rows();
+      assertEqual(buildExport({ ...base, skipped: { key: ['k1'] } }).endpoints.length, 0, 'a locked key is skipped');
+      assertEqual(buildExport({ ...base, skipped: { model: ['m1'] } }).endpoints.length, 0, 'a locked model is skipped');
+      assertEqual(buildExport({ ...base, skipped: { provider: ['p1'] } }).endpoints.length, 0, 'a locked URL is skipped');
+    });
+  });
+
+  describe('AG. A streamed chat turn through the router', () => {
+    /** A provider with one model and `secrets.length` keys mapped to it. */
+    async function setupChat({ chat, modelIds = ['m1'], secrets = [KEY_A] } = {}) {
+      const mock = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': chat ?? { body: { choices: [{ message: { content: 'Xin chao ban' } }] } },
+      });
+      globalThis.fetch = mock;
+
+      const storage = new MemoryStorage();
+      const providers = new ProviderRegistry(storage);
+      const models = new ModelRegistry(storage);
+      const keys = new KeyRegistry(storage);
+      const mapper = new Mapper(storage);
+
+      const { provider } = await providers.upsert({ name: 'Chat Gate', baseURL: 'https://c.test/v1' });
+      for (const modelId of modelIds) {
+        await models.upsertDiscovered({ providerId: provider.id, modelId, pricing: { prompt: '0', completion: '0' } });
+      }
+      const keyRows = [];
+      for (const secret of secrets) {
+        const { key } = await keys.add({ providerId: provider.id, secret });
+        keyRows.push(key);
+        // Every key is mapped to the first model, so a dead key and a live one
+        // are the two candidates for the same model.
+        await mapper.upsert({ providerId: provider.id, modelId: modelIds[0], keyId: key.id });
+      }
+
+      const router = new Router(storage, { providers, models, mapper });
+      return { mock, storage, providers, models, keys, mapper, router, provider, keyRows };
+    }
+
+    it('AG1: a streamed turn emits tokens as they arrive and reports the whole answer', async () => {
+      const { router } = await setupChat();
+      const seen = [];
+      const r = await router.streamChat({
+        messages: [{ role: 'user', content: 'hi' }],
+        onToken: (delta) => seen.push(delta),
+      });
+
+      assertEqual(r.ok, true, 'the turn succeeded');
+      // The mock streams in 8-character pieces, so a one-blob answer would mean
+      // the token callback was never wired.
+      assert(seen.length > 1, 'the answer arrived in pieces, not one lump: ' + seen.length);
+      assertEqual(seen.join(''), 'Xin chao ban', 'and the pieces spell the answer');
+      assertEqual(r.content, 'Xin chao ban', 'the whole answer is returned too');
+      assertEqual(r.provider, 'Chat Gate', 'the answering URL is named');
+    });
+
+    it('AG2: an expired key rotates to the next key and the failure is recorded', async () => {
+      const { router, keyRows } = await setupChat({
+        secrets: [KEY_A, KEY_B],
+        chat: (url, options) =>
+          String(options.headers?.Authorization ?? '').includes(KEY_A)
+            ? { status: 401, body: { error: { message: 'invalid api key' } } }
+            : { body: { choices: [{ message: { content: 'ok' } }] } },
+      });
+
+      const r = await router.streamChat({ messages: [{ role: 'user', content: 'hi' }] });
+
+      assertEqual(r.ok, true, 'the turn still succeeded');
+      assertEqual(r.keyId, keyRows[1].id, 'on the other key');
+      assertEqual(r.tried.length, 1, 'after exactly one recorded failure');
+      assertEqual(r.tried[0].status, STATUS.AUTH_INVALID, 'and the failure was the dead key');
+    });
+
+    it('AG3: a hard failure that showed nothing is a plain failure, not a partial one', async () => {
+      const { router } = await setupChat({
+        secrets: [KEY_A, KEY_B],
+        chat: { status: 500, body: { error: { message: 'boom' } } },
+      });
+
+      const r = await router.streamChat({ messages: [{ role: 'user', content: 'hi' }] });
+      assertEqual(r.ok, false, 'the turn failed');
+      // "partial" means the user already saw text. Nothing arrived here, so the
+      // UI must be free to show a clean error rather than a half-written answer.
+      assertEqual(Boolean(r.partial), false, 'and nothing was shown, so it is not partial');
+    });
+
+    it('AG4: the session budget refuses a turn instead of spending past it', async () => {
+      const { router } = await setupChat();
+      const agent = new Agent(router, { maxTotalTokens: 100 });
+
+      const first = await agent.turn({ userText: 'a', maxTokens: 100 });
+      assertEqual(first.ok, true, 'the first turn runs');
+      assertEqual(agent.remaining, 0, 'and the whole budget is spent');
+
+      const second = await agent.turn({ userText: 'b' });
+      assertEqual(second.ok, false, 'the next turn is refused');
+      assertEqual(second.reason, 'BUDGET_EXHAUSTED', 'because the session is out of budget');
     });
   });
 }

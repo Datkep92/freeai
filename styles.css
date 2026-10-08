@@ -981,7 +981,7 @@ label {
 .model .speed.measured { color: var(--ok); background: var(--ok-dim); }
 
 /* Says what a tap does before it is tapped: this row copies, it does not open. */
-.model .taphint { flex: none; align-self: center; width: 16px; height: 16px; color: var(--text-3); }
+
 
 /* ---- lock state ----
    The glyph carries it, and it is told apart from its neighbours by fill and
@@ -1814,4 +1814,203 @@ dialog:not([open]) { display: none; }
   .sheet-grab { margin-top: 6px; }
   .sheet-head { padding-top: 8px; padding-bottom: 8px; }
   .sheet-foot { padding-top: 8px; }
+}
+
+/* -------------------------------------------------------------- list & chat
+ *
+ * The URL menu's two "danh sách" sheets (model 0đ and API) reuse one dialog
+ * shape: a scrollable list of rows, each with an edit and a delete on the right.
+ * The chat panel inside the model card follows the same idea - a scrollable log
+ * above a one-line input with a send button.
+ */
+
+.listmode {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.listrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+  min-height: 44px;
+}
+
+.listrow .grow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.listrow .lname {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listrow .lmeta {
+  font-size: 11px;
+  color: var(--text-dim, var(--text));
+  opacity: 0.75;
+}
+
+.listmode .empty {
+  padding: 12px 6px;
+  font-size: 13px;
+}
+
+.chatlog {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 30vh;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 10px);
+  background: var(--surface-2);
+}
+
+.chatmsg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.chatmsg .chat-who {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+
+.chatmsg .chat-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chatmsg.error .chat-text { color: var(--bad); }
+
+.chatline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.chatline .testinput { flex: 1; min-width: 0; }
+
+button.mini.del { color: var(--bad); }
+
+/* ------------------------------------------------------------ export config
+ * The export preview is monospaced and scrolls, because it is a file: the
+ * whitespace is part of the output and a proportional font would misrepresent
+ * the .env lines the user is about to paste somewhere else.
+ */
+.exportout {
+  margin: 0;
+  max-height: 34vh;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 10px);
+  background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text);
+}
+
+.side-foot #btnExport { margin-top: 10px; }
+
+/* ------------------------------------------------------------------ AI tab
+ * A conversation, drawn as a list of bubbles: a small role line over the text,
+ * the user's on the right so the two sides never have to be colour-matched. The
+ * log scrolls on its own so the composer stays put while an answer streams in.
+ */
+.aihead {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 2px 8px;
+  font-size: 12px;
+  color: var(--text-dim, var(--text));
+  opacity: 0.85;
+}
+
+.aiwho { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aibudget { flex: none; }
+
+.ailog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 160px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 10px);
+  background: var(--surface-2);
+}
+
+.aibub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 92%;
+  font-size: 14px;
+}
+
+.aibub .aiwho {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.aibub .aitext {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.aibub.you {
+  align-self: flex-end;
+  text-align: right;
+}
+
+.aibub.error .aitext { color: var(--bad); }
+
+.aiform { margin-top: 10px; }
+
+.aiform textarea {
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 10px);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.aiform-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
 }

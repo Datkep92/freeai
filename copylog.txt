@@ -13,6 +13,8 @@ Dữ liệu người dùng trong IndexedDB. Đo tốc độ model bằng SSE th�
 
 FILES CREATED:
 - scripts/mock-provider.js   (provider giả lập, node:net, không dependency, có CORS + SSE)
+- core/export-config.js     (module thuần: dựng "cấu hình đang hoạt động" từ các mapping HEALTHY
+                            rồi xuất ra .env / JSON / YAML)
 
 FILES CHANGED:
 - core/free-detector.js   thêm isFreeModel() và isUnknownPrice() — định nghĩa "0đ" dùng chung
@@ -107,26 +109,72 @@ TÌM & PHÂN LOẠI URL:
   dòng URL không còn vẽ chấm màu nào, nó nói bằng chữ ("quét ngay" / "cần key" / "chưa thử").
 
 MÀN HÌNH (mục đích người dùng yêu cầu):
-- Một danh sách phẳng mọi URL → model → API, mỗi phần là một nút copy:
-  bấm header URL → chép URL, bấm dòng model → chép model id, bấm chip API → hiện + chép key.
+- Một danh sách phẳng mọi URL → model → API:
+  bấm header URL → chép URL, bấm dòng model → MỞ THÔNG TIN model, bấm chip API → hiện + chép key.
 - Header URL dính dưới appbar nên URL luôn trong tầm mắt khi cuộn.
-- Menu ⋮ của mỗi URL giữ đủ: quét lại, quét nhiều model, thêm API, thêm model, đổi cách quay vòng,
+- Menu ⋮ của mỗi URL: quét lại, quét nhiều model, danh sách model free, danh sách API, đổi cách quay vòng,
   khoá model của URL, xoá cấu hình riêng, mở website, chép base URL.
-- Nhấn giữ dòng vẫn mở sheet hành động; kéo-thả vẫn sắp xếp trong từng URL.
+- Nhấn giữ dòng URL vẫn mở sheet hành động; kéo-thả vẫn sắp xếp trong từng URL.
+
+XÂY DỰNG LẠI UI — NÚT BẤM TỐI ƯU (lượt này):
+- Hàng model: bấm vào dòng = MỞ THÔNG TIN model (trước đây bấm để chép id, thông tin nằm ở nút ⓘ).
+  Bỏ hẳn nhấn-giữ trên model; hàng chỉ còn: bấm mở thẻ, nút ✓ CHECK, nút khoá.
+- Nút ⓘ đổi thành ✓ CHECK: check nhanh model với các API của URL theo thứ tự ưu tiên,
+  dừng ở API đầu tiên trả lời — không cần mở thẻ. Kết quả ghi đúng như mọi lần check khác
+  (mapping + đo tốc độ), nên dòng tốc độ và pane Sức khoẻ cập nhật theo.
+- "Quét nhiều model" đổi cách chạy: thay vì 1 API × nhiều model, nay MỖI model 0đ thử
+  lần lượt các API của URL (theo thứ tự quay vòng), DỪNG ở API đầu tiên trả lời.
+  Sheet có thêm lựa chọn: "Tất cả API (N)" là mặc định, hoặc chọn 1 API để cô lập lỗi.
+  Một API lỗi đủ 5 lần liên tiếp bị "nghỉ" cho phần còn lại của lượt — 1 key chết không đốt hết quota.
+  Engine: core/bulk-probe.js thêm runAcrossKeys(); run() cũ giữ nguyên cho luồng 1-key (BP1–BP9 vẫn xanh).
+- Menu ⋮ của URL: bỏ "Thêm API key" và "Thêm model thủ công"; thêm
+  "Danh sách model free" và "Danh sách API".
+  * "Danh sách model free" = danh sách model 0đ của URL; mỗi dòng có nút sửa / xoá,
+    và nút "+ Thêm model" chuyển sang form thêm/sửa (tái dùng modelAddDialog, thêm chế độ danh sách).
+  * "Danh sách API" = danh sách API, mỗi dòng ghi rõ "hoạt động · qua <model>" hay nhãn trạng thái;
+    mỗi dòng có nút đổi key (thay secret tại chỗ) / xoá, và nút "+ Thêm API"
+    (tái dùng keyDialog, thêm chế độ danh sách).
+- Thẻ thông tin model: chạm vào một dòng API mở Ô CHAT test với đúng key + model đó:
+  nhập tin nhắn, nút GỬI, ô LOG ghi cả câu hỏi lẫn phản hồi, và nút XOÁ API.
+  Thêm adapter.chatOnce() trong core/adapters/base.js — đường duy nhất gửi văn bản do người dùng nhập;
+  nó KHÔNG ghi phán quyết nào (chat là câu hỏi, không phải health check).
+- Trong thẻ model, foot vẫn là: THỬ MODEL NÀY · QUÉT NHIỀU MODEL · CHECK TẤT CẢ API · THÊM API
+  — đây là nơi hai hành động cũ của nhấn-giữ model chuyển về.
+
+TINH CHỈNH NÚT + XUẤT CẤU HÌNH (lượt này):
+- Bỏ hẳn icon "xem thông tin" ở cuối hàng model (glyph ⓘ .taphint): bấm cả hàng đã mở thẻ
+  nên ký hiệu đó chỉ lặp lại điều hàng vốn làm. Hàng còn: chấm mức độ · tên/facts · tốc độ · ✓ CHECK · khoá.
+- "Danh sách API": mỗi dòng thêm nút CHECK riêng (cạnh đổi-key và xoá). Bấm check xong, danh sách
+  tự vẽ lại nên chấm trạng thái của key đổi ngay, không cần đóng-mở lại sheet.
+- Nút "⤓ XUẤT CẤU HÌNH" ở chân ngăn kéo → sheet xuất. Nội dung là các URL thật sự đang chạy:
+  chỉ mapping status HEALTHY, chỉ key/model chưa bị khoá, mặc định = endpoint tốt nhất.
+  Ba định dạng chuẩn để cắm vào nhiều loại CLI:
+    * .env — OpenAI-compatible (openai, aichat, llm, mods, aider, ...): khối OPENAI_BASE_URL/API_KEY/MODEL
+      cho endpoint mặc định, kèm một khối <SLUG>_BASE_URL/API_KEY/MODEL cho mỗi URL còn lại;
+    * JSON — { version, exportedAt, default, endpoints[] } để tool tự đọc;
+    * YAML — cùng nội dung, cho tool cấu hình bằng file.
+  Sheet cảnh báo ngay trên đầu rằng bản xuất chứa key thật; có CHÉP CẤU HÌNH và TẢI FILE
+  (không hỗ trợ tải được thì tự rơi về chép vào clipboard).
+  Bản xuất KHÔNG bao giờ đi vào log; nó chỉ hiện ở ô #exportOut của sheet người dùng chủ động mở.
 
 TEST RESULTS:
-- npm test        295/295 PASS   (exit 0; UI53 tìm URL, UI54 phân loại URL, UI55 xếp theo số model 0đ,
-                  UI56 khoá tất cả ↔ mở khoá tất cả, UI57 bấm URL thu danh sách + thanh về "Tất cả URL")
-- npm run uicheck PASS           (exit 0; render app.js thật, 0 dòng "LOI"; tieu de "Model 0đ · Gateway",
-                  1 khoi URL, "2 model 0đ · 1 URL")
-- node --check app.js SYNTAX OK
-- Browser thật (http://localhost:8788) + mock provider: 2 tab "Free 32 · Null 1198" hiện đúng;
-  mở ngăn kéo bấm OpenRouter → chỉ còn 1 khối URL, thanh "OpenRouter · https://openrouter.ai/api/v1"
-  + nút "Tất cả URL", tiêu đề "Model 0đ · OpenRouter", đếm "20 model 0đ · 1 URL · 7 chưa rõ giá ẩn";
-  bấm "Tất cả URL" → về lại 3 khối, "32 model 0đ · 3 URL", thanh ẩn; console không có lỗi.
+- npm test        309/309 PASS   (exit 0; thêm EX1–EX4 cho core/export-config.js (chỉ xuất endpoint
+                  có mapping HEALTHY, tôn trọng khoá, .env/JSON/YAML cùng một bức tranh),
+                  UI62 nút CHECK trong danh sách API, UI63 sheet xuất cấu hình + đổi định dạng)
+- npm run uicheck PASS           (exit 0; render app.js thật, 0 dòng "LOI";
+                  "bam dong model -> mo the thong tin: OK", "bam API -> mo o chat: OK",
+                  "nut xuat cau hinh -> mo sheet: OK", "lo secret tren dong: khong")
+- node --check app.js + core/export-config.js SYNTAX OK
+- Browser thật (http://localhost:8788): hàng model không còn glyph .taphint (chỉ còn free · mid · speed),
+  có nút "Check nhanh …"; danh sách API mỗi dòng có "Check API này"; nút "XUẤT CẤU HÌNH" mở sheet,
+  .env chứa OPENAI_BASE_URL (URL mock đang chạy) + dòng API_KEY, đổi sang JSON thì JSON.parse được
+  và default.baseURL đúng; CHÉP và TẢI FILE chạy không lỗi (các lỗi console là do app quét provider
+  thật bị CORS/401 trong sandbox, không liên quan).
+  (Ảnh chụp màn hình không chụp được do webview của host không composited — đã xác minh bằng DOM.)
 
 BUILD RESULT:
-Không có bước build (web tĩnh). Shell đã đổi nên sw.js bump lên fmh-v18 và index.html ?v=15.
+Không có bước build (web tĩnh). Shell đã đổi nên sw.js bump lên fmh-v20 và index.html ?v=17
+(cả styles.css và app.js); thêm ./core/export-config.js vào SHELL của service worker.
 
 HOW TO RUN:
   npm start                 # UI: http://localhost:8788
@@ -141,8 +189,10 @@ KNOWN ISSUES:
   Đây là lựa chọn đã chốt ("ẩn khỏi danh sách, vẫn lưu"), nhưng nếu nhà cung cấp không công bố giá
   thì không loại trừ được khả năng đó là bản tính phí. Muốn chặn hẳn thì cần một công tắc trong core/config.js.
 - Đã kiểm chứng đầu-cuối bằng mock provider, chưa bằng key thật của provider thật.
-- Các thay đổi của lượt này (gộp tab Free/Null + thu danh sách theo URL) CHƯA commit;
-  cây làm việc đang giữ chúng cùng các sửa trước đó.
+- Các thay đổi của hai lượt gần nhất (xây dựng lại UI: danh sách model/API, nút ✓ CHECK, ô chat,
+  runAcrossKeys; tinh chỉnh nút + xuất cấu hình .env/JSON/YAML) CHƯA commit;
+  cây làm việc đang giữ chúng cùng các commit trước đó.
+- Ô chat gửi văn bản người dùng nhập tới provider thật; đã kiểm bằng mock, chưa bằng key thật.
 - Ô tìm URL, bộ lọc URL và thanh lọc-theo-URL là trạng thái tạm của phiên (không lưu storage):
   mở lại app là về "Tất cả". Đây là lựa chọn có chủ ý — một bộ lọc còn sót lại sẽ khiến
   người dùng tưởng mất URL (hoặc tưởng mất model).

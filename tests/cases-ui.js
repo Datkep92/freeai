@@ -24,7 +24,7 @@ const KEY_B = 'oc_sk_Z9y8X7w6V5u4T3s2R1q0';
 const DOM_IDS = [
   'btnScanAll', 'btnAddUrl', 'btnAddModel', 'btnCancel',
   'searchBox', 'treeRoot', 'keysRoot', 'healthRoot', 'logRoot', 'toast',
-  'filterCount', 'paneKeys', 'paneHealth', 'paneLog', 'modelDialog', 'modelTitle',
+  'filterCount', 'paneKeys', 'paneHealth', 'paneLog', 'paneAI', 'modelDialog', 'modelTitle',
   'modelHint', 'boxUrl', 'boxModel', 'keyRows', 'keyCount', 'btnCheckOne', 'btnAddKey',
   'modelClose', 'keyDialog', 'keyHint', 'keySecret', 'keyConfirm', 'keyCancel',
   'delDialog', 'delHint', 'delSecret', 'delConfirm', 'delRestore', 'delCancel',
@@ -39,7 +39,13 @@ const DOM_IDS = [
   'bulkDialog', 'bulkHint', 'bulkClose', 'bulkUrl', 'bulkKey', 'bulkLimit',
   'bulkCap', 'bulkEstimate', 'bulkRows', 'bulkProgress', 'bulkRun',
   'bulkStop', 'bulkDismiss',
+  'chatField', 'chatKeyName', 'chatLog', 'chatInput', 'chatSend', 'chatDelete',
+  'keyList', 'keyListAdd', 'keyForm',
+  'manualList', 'manualListAdd', 'manualForm',
+  'btnExport', 'exportDialog', 'exportHint', 'exportCount', 'exportFormat',
+  'exportOut', 'exportCopy', 'exportDownload', 'exportClose', 'exportDone',
   'rowMenu', 'rowMenuTitle', 'rowMenuSub', 'rowMenuActions', 'rowMenuCancel',
+  'aiWho', 'aiBudget', 'aiLog', 'aiInput', 'aiSend', 'aiStop', 'aiClear',
 ];
 
 /**
@@ -331,7 +337,7 @@ function installDom() {
   // The bottom bar is static markup, not built by app.js, so it has to exist
   // here as it does in index.html. A stub without it makes the bar look wired
   // while `querySelectorAll('.tabbar-btn')` finds nothing at all.
-  for (const target of ['drawer', 'scan', 'keys', 'health']) {
+  for (const target of ['drawer', 'scan', 'keys', 'health', 'ai']) {
     const btn = new El('button');
     btn.className = 'tabbar-btn';
     btn.dataset.goto = target;
@@ -753,19 +759,29 @@ async function tap(node) {
  * Tapping the row itself copies the model id now, so the card is reached from
  * the one control that is not the copy target - which is what the ⓘ is for.
  */
+/**
+ * Open a model's card, the way a person does: a tap on the row itself.
+ *
+ * The row stopped copying and started opening the card, so the card is reached
+ * the same way as every other row of the app - one tap on the row it belongs
+ * to. The ✓ beside it is what runs a check, and that has its own helper.
+ */
 async function tapModel(row) {
-  const info = row.children.find((c) => c.className === 'iconbtn');
-  if (info) {
-    for (const fn of info._listeners.click ?? []) await fn();
-    return;
-  }
-  await tapModelRow(row);
+  const open = modelOpenOf(row);
+  for (const fn of open._listeners.click ?? []) await fn();
 }
 
-/** Tap the row itself. That is the copy target now, not the card. */
+/** Tap the row itself. Same target as tapModel; kept for older cases. */
 async function tapModelRow(row) {
   const open = modelOpenOf(row);
   for (const fn of open._listeners.click ?? []) await fn();
+}
+
+/** Tap the ✓ on a model row, which checks the model against the URL's keys. */
+async function tapModelCheck(row) {
+  const check = row.children.find((c) => c.className === 'iconbtn' && (c.title ?? '').includes('Check nhanh'));
+  for (const fn of check?._listeners?.click ?? []) await fn();
+  return check;
 }
 
 /** The API chips on a model row, in the order they are drawn. */
@@ -1635,7 +1651,7 @@ export function registerUiCases() {
       assert(lock.title.includes('URL'), 'and the name says where it came from: ' + lock.title);
     });
 
-    it('UI20: a long press on a model opens its actions instead of the row', async () => {
+    it('UI20: a model has no long press left - a tap opens the card, the ✓ is the fast action', async () => {
       const nodes = installDom();
       await seed();
       globalThis.fetch = createMockFetch({
@@ -1646,21 +1662,27 @@ export function registerUiCases() {
       await openUrlInDrawer(nodes, 'Gateway');
 
       const row = modelRowsOf(nodes)[0];
-      await longPressRow(row);
 
-      const menu = nodes.get('rowMenu');
-      assertEqual(menu.open, true, 'the sheet opened');
-      const labels = nodes.get('rowMenuActions').children.map((c) => c.textContent);
-      assert(labels.length >= 3, 'several actions are offered: ' + labels.length);
-      // The three things a person does to a model, all reachable without the
-      // row carrying five buttons.
-      const all = labels.join(' | ');
-      assert(all.includes('Xem thông tin'), 'inspect: ' + all);
-      assert(all.includes('Khoá model'), 'lock the model: ' + all);
-      assert(all.includes('Khoá cả URL'), 'lock the whole URL: ' + all);
+      // The press that used to open an action sheet must do nothing now: the
+      // row's own tap is the card, and the ✓ is the fast action. A sheet here
+      // would mean the gesture was never really removed.
+      await longPressRow(row);
+      assertEqual(nodes.get('rowMenu').open, false, 'no action sheet on a model');
+
+      // The square beside the row is a check, not an info button: its name is
+      // what tells the two apart on a row that no longer has either label.
+      const check = row.children.find((c) => c.className === 'iconbtn');
+      assert(check && check.title.includes('Check nhanh'), 'the row carries a check button: ' + check?.title);
+
+      await tapModel(row);
+      await new Promise((r) => setTimeout(r, 120));
+      assertEqual(nodes.get('modelDialog').open, true, 'the tap opens the card');
+      // The per-model actions that the long press used to hold live on the card.
+      const foot = ['btnTestModel', 'btnBulk', 'btnCheckOne'].filter((id) => nodes.get(id));
+      assertEqual(foot.length, 3, 'try-this / bulk / check-all are on the card');
     });
 
-    it('UI21: a long press on a URL offers scan, key and manual model', async () => {
+    it('UI21: a long press on a URL lists models and APIs instead of separate add buttons', async () => {
       const nodes = installDom();
       await seed();
       globalThis.fetch = createMockFetch({
@@ -1675,8 +1697,13 @@ export function registerUiCases() {
 
       const all = nodes.get('rowMenuActions').children.map((c) => c.textContent).join(' | ');
       assert(all.includes('Quét lại'), 'rescan: ' + all);
-      assert(all.includes('Thêm API key'), 'add key: ' + all);
-      assert(all.includes('Thêm model thủ công'), 'add model by hand: ' + all);
+      assert(all.includes('Quét nhiều model'), 'batch check: ' + all);
+      assert(all.includes('Danh sách model free'), 'the model list: ' + all);
+      assert(all.includes('Danh sách API'), 'the API list: ' + all);
+      // The old separate entries are gone: each list carries its own add, so a
+      // third entry for the same job would only make the menu longer.
+      assertEqual(all.includes('Thêm API key'), false, 'no separate add-key entry');
+      assertEqual(all.includes('Thêm model thủ công'), false, 'no separate add-model entry');
     });
 
     it('UI22: the bottom bar opens the drawer without needing the header button', async () => {
@@ -2132,7 +2159,10 @@ export function registerUiCases() {
       assertEqual(nodes.get('bulkUrl').textContent, 'https://gw.test/v1', 'the URL is on screen');
       // Both keys, each with its status: picking between two masked keys that
       // look alike is otherwise guesswork.
-      assertEqual(nodes.get('bulkKey').children.length, 2, 'both keys offered');
+      const options = nodes.get('bulkKey').children;
+      assertEqual(options.length, 3, 'every key plus the "all" option');
+      assert(options[0].textContent.includes('Tất cả API'), 'the default is every key: ' + options[0].textContent);
+      assertEqual(nodes.get('bulkKey').value, '__all__', 'and it is the selected one');
       assertEqual(nodes.get('bulkRun').disabled, false, 'and the run is possible');
     });
 
@@ -2402,7 +2432,7 @@ export function registerUiCases() {
 
     // ---------------------------------------------------------------- copy list
 
-    it('UI48: tapping a model row copies its id and opens nothing', async () => {
+    it('UI48: tapping a model row opens its card and copies nothing', async () => {
       const nodes = installDom();
       await seed();
       globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
@@ -2414,11 +2444,14 @@ export function registerUiCases() {
       const row = modelRowsOf(nodes)[0];
       const id = modelNameOf(row);
       await tapModelRow(row);
-      await new Promise((r) => setTimeout(r, 60));
+      await new Promise((r) => setTimeout(r, 120));
 
-      assertEqual(copied.length, 1, 'one tap is one copy');
-      assertEqual(copied[0], id, 'and what it copies is the model id: ' + copied[0]);
-      assertEqual(Boolean(nodes.get('modelDialog').open), false, 'no card was opened behind it');
+      // A tap used to copy and leave nothing on screen. It now opens the card -
+      // which is where the id is copied from - so the shortcut moved one step
+      // deeper rather than disappearing.
+      assertEqual(copied.length, 0, 'a tap copies nothing by itself');
+      assertEqual(nodes.get('modelDialog').open, true, 'it opens the card');
+      assertEqual(nodes.get('boxModel').textContent, id, 'and names the model that was tapped');
     });
 
     it('UI49: the API chips are on the row, masked, and tapping one reveals and copies', async () => {
@@ -2525,8 +2558,9 @@ export function registerUiCases() {
       const labels = nodes.get('rowMenuActions').children.map((c) => c.textContent).join(' | ');
       for (const wanted of [
         'Quét lại URL này',
-        'Thêm API key',
-        'Thêm model thủ công',
+        'Quét nhiều model',
+        'Danh sách model free',
+        'Danh sách API',
         'Quay vòng',
         'Khoá model ở URL này',
         'Xoá cấu hình riêng',
@@ -2743,6 +2777,244 @@ export function registerUiCases() {
       await clearScope(nodes);
       assertEqual(urlBlocksOf(nodes).length, 2, 'clearing brings every URL back');
       assertEqual(nodes.get('scopeBar').hidden, true, 'and hides the bar again');
+    });
+
+    it('UI58: the URL menu opens the model list, and each row can be edited or deleted', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      await tap(blockMenuOf(firstBlock(nodes)));
+      await new Promise((r) => setTimeout(r, 80));
+      const item = nodes
+        .get('rowMenuActions')
+        .children.find((c) => c.textContent.includes('Danh sách model free'));
+      assert(item, 'the URL menu offers the model list');
+      await tap(item);
+      await new Promise((r) => setTimeout(r, 120));
+
+      assertEqual(nodes.get('modelAddDialog').open, true, 'the model list sheet opened');
+      assertEqual(nodes.get('manualList').hidden, false, 'the list is shown, not the form');
+      const rows = nodes.get('manualList').children.filter((c) => c.classList.contains('listrow'));
+      assertEqual(rows.length, 2, 'every 0đ model of the URL is listed');
+      // Each row carries an edit and a delete, which is what "click vào để
+      // sửa/xoá" means concretely.
+      const titles = rows[0].children.map((c) => c.title ?? '');
+      assert(titles.some((t) => t.includes('Sửa')), 'an edit control: ' + titles.join(' | '));
+      assert(titles.some((t) => t.includes('Xoá')), 'a delete control');
+
+      // "+ Thêm model" steps into the form rather than opening a second sheet.
+      await tap(nodes.get('manualListAdd'));
+      await new Promise((r) => setTimeout(r, 60));
+      assertEqual(nodes.get('manualForm').hidden, false, 'the add form appears');
+      assertEqual(nodes.get('manualList').hidden, true, 'and the list steps aside');
+    });
+
+    it('UI59: the URL menu opens the API list with working status and per-row controls', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      await tap(blockMenuOf(firstBlock(nodes)));
+      await new Promise((r) => setTimeout(r, 80));
+      const item = nodes
+        .get('rowMenuActions')
+        .children.find((c) => c.textContent.includes('Danh sách API'));
+      assert(item, 'the URL menu offers the API list');
+      await tap(item);
+      await new Promise((r) => setTimeout(r, 120));
+
+      assertEqual(nodes.get('keyDialog').open, true, 'the API list sheet opened');
+      const rows = nodes.get('keyList').children.filter((c) => c.classList.contains('listrow'));
+      assertEqual(rows.length, 2, 'both keys of the URL are listed');
+      const text = rows[0].textContent;
+      assert(text.includes('…') || text.includes('oc_'), 'a masked name is shown: ' + text);
+      const titles = rows[0].children.map((c) => c.title ?? '');
+      assert(titles.some((t) => t.includes('Đổi key')), 'an edit control: ' + titles.join(' | '));
+      assert(titles.some((t) => t.includes('Xoá API')), 'a delete control');
+    });
+
+    it('UI60: tapping an API in the card opens a chat that sends and logs the reply', async () => {
+      const nodes = installDom();
+      await seed();
+      const mock = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'Xin chào từ model' } }] } },
+      });
+      globalThis.fetch = mock;
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      await tapModel(modelRowsOf(nodes)[0]);
+      await new Promise((r) => setTimeout(r, 120));
+
+      assertEqual(nodes.get('chatField').hidden, true, 'the chat starts hidden');
+
+      const keyRow = nodes.get('keyRows').children.find((c) => c.classList.contains('keyrow'));
+      const flex = keyRow.children.find((c) => c.className === 'kflex');
+      await tap(flex);
+      await new Promise((r) => setTimeout(r, 60));
+      assertEqual(nodes.get('chatField').hidden, false, 'tapping an API opens the chat');
+
+      nodes.get('chatInput').value = 'Chào bạn';
+      mock.reset();
+      await tap(nodes.get('chatSend'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      const sent = mock.calls.filter((c) => c.url.includes('/chat/completions'));
+      assertEqual(sent.length, 1, 'one send is one request');
+      assert(
+        String(sent[0].body).includes('Chào bạn'),
+        'and it carries the typed message: ' + sent[0].body
+      );
+      const log = nodes.get('chatLog').textContent;
+      assert(log.includes('Chào bạn'), 'the log shows what was asked: ' + log);
+      assert(log.includes('Xin chào từ model'), 'and what came back: ' + log);
+    });
+
+    it('UI61: the ✓ on a model row checks it against the URL keys without opening the card', async () => {
+      const nodes = installDom();
+      await seed();
+      const mock = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      globalThis.fetch = mock;
+      await bootApp();
+      await openUrlInDrawer(nodes, 'Gateway');
+      mock.reset();
+
+      const row = modelRowsOf(nodes)[0];
+      const id = modelNameOf(row);
+      await tapModelCheck(row);
+      await new Promise((r) => setTimeout(r, 200));
+
+      assertEqual(nodes.get('modelDialog').open, false, 'the card stayed shut');
+      const sent = mock.calls.filter((c) => c.url.includes('/chat/completions'));
+      assert(sent.length >= 1, 'at least one request was sent');
+      assertEqual(JSON.parse(sent[0].body).model, id, 'and it named the model that was checked');
+    });
+
+    it('UI62: every row of the API list carries its own check button', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      await tap(blockMenuOf(firstBlock(nodes)));
+      await new Promise((r) => setTimeout(r, 80));
+      const item = nodes
+        .get('rowMenuActions')
+        .children.find((c) => c.textContent.includes('Danh sách API'));
+      await tap(item);
+      await new Promise((r) => setTimeout(r, 120));
+
+      const rows = nodes.get('keyList').children.filter((c) => c.classList.contains('listrow'));
+      assert(rows.length >= 1, 'there is at least one API row');
+      // A check per row: the list is where a key is judged, so it needs the
+      // action that produces the judgement, not only edit and delete.
+      for (const row of rows) {
+        const titles = row.children.map((c) => c.title ?? '');
+        assert(titles.some((t) => t.includes('Check API')), 'a check control: ' + titles.join(' | '));
+      }
+    });
+
+    it('UI63: the export sheet writes the working configuration in the chosen format', async () => {
+      const nodes = installDom();
+      await seed();
+      globalThis.fetch = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': { body: { choices: [{ message: { content: 'OK' } }] } },
+      });
+      await bootApp();
+
+      // Prove one model of the URL works, which is what makes it exportable.
+      await openUrlInDrawer(nodes, 'Gateway');
+      const row = modelRowsOf(nodes)[0];
+      const id = modelNameOf(row);
+      await tapModelCheck(row);
+      await new Promise((r) => setTimeout(r, 200));
+
+      await tap(nodes.get('btnExport'));
+      await new Promise((r) => setTimeout(r, 200));
+
+      assertEqual(nodes.get('exportDialog').open, true, 'the export sheet opened');
+      const env = nodes.get('exportOut').textContent;
+      assert(env.includes('OPENAI_BASE_URL=https://gw.test/v1'), 'the .env names the working URL: ' + env);
+      assert(env.includes(id), 'and the model that was checked: ' + env);
+      assert(env.includes('OPENAI_API_KEY='), 'and a key line');
+
+      // Flipping the format repaints from the same data, in a shape a tool can
+      // parse rather than a second .env.
+      nodes.get('exportFormat').value = 'json';
+      for (const fn of nodes.get('exportFormat')._listeners.change ?? []) fn({ target: nodes.get('exportFormat') });
+      await new Promise((r) => setTimeout(r, 40));
+      const parsed = JSON.parse(nodes.get('exportOut').textContent);
+      assertEqual(parsed.default.baseURL, 'https://gw.test/v1', 'the json default is the working URL');
+    });
+
+    it('UI64: the AI tab streams an answer into its bubble and counts the tokens it spent', async () => {
+      const nodes = installDom();
+      await seed();
+      // The reply is longer than one SSE chunk, so the painter is exercised on
+      // the same path a real provider drives rather than on a single blob.
+      globalThis.fetch = createMockFetch({
+        '/models': { body: { data: [] } },
+        '/chat/completions': {
+          body: {
+            choices: [{ message: { content: 'Chao ban, toi la tro ly cua hub.' } }],
+            usage: { total_tokens: 42 },
+          },
+        },
+      });
+      await bootApp();
+
+      // Reached the way a person reaches it: the bar is delegated, so a handler
+      // bound to the button itself would not exist and calling one would prove
+      // nothing about the wiring that ships.
+      const aiBtn = document.querySelectorAll('.tabbar-btn').find((c) => c.dataset?.goto === 'ai');
+      assert(aiBtn, 'the bottom bar has an AI button');
+      for (const fn of document._listeners.click ?? []) await fn({ target: aiBtn });
+      assertEqual(nodes.get('paneAI').hidden, false, 'the AI pane is the one on screen');
+
+      // No mapping means no candidate, so the turn has to be set up exactly the
+      // way the app would: one model proven to answer, which is what creates the
+      // mapping the router rotates over.
+      await openUrlInDrawer(nodes, 'Gateway');
+      const row = modelRowsOf(nodes)[0];
+      const modelId = modelNameOf(row);
+      await tapModelCheck(row);
+      await new Promise((r) => setTimeout(r, 200));
+
+      const budgetBefore = nodes.get('aiBudget').textContent;
+      assert(budgetBefore.includes('20.000'), 'a fresh session opens with the full budget: ' + budgetBefore);
+
+      nodes.get('aiInput').value = 'Xin chao';
+      await tap(nodes.get('aiSend'));
+
+      const bubbles = nodes.get('aiLog').children;
+      assertEqual(bubbles.length, 2, 'one question, one answer');
+      assert(bubbles[0].classList.contains('you'), 'the first bubble is the question');
+      assertEqual(bubbles[0].textContent.includes('Xin chao'), true, 'the question is in it');
+      assert(bubbles[1].classList.contains('ai'), 'the second bubble is the answer');
+      assertEqual(
+        bubbles[1].textContent.includes('Chao ban'),
+        true,
+        'the model answer landed in the bubble: ' + bubbles[1].textContent
+      );
+
+      // The budget is the whole reason the session is a class: it has to move by
+      // what the provider reported, not stay at its opening number.
+      const budgetAfter = nodes.get('aiBudget').textContent;
+      assert(budgetAfter.includes('19.958'), 'the 42 reported tokens were subtracted: ' + budgetAfter);
+      assertEqual(nodes.get('aiWho').textContent.includes(modelId), true, 'the header names what answered');
+
+      // And clearing the log starts the conversation over without refilling the
+      // budget - the tokens were spent whether or not they are still on screen.
+      await tap(nodes.get('aiClear'));
+      assertEqual(nodes.get('aiLog').children.length, 0, 'the log is empty again');
+      assert(nodes.get('aiBudget').textContent.includes('19.958'), 'and the spend was not refunded');
     });
   });
 }

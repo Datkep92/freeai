@@ -25,6 +25,8 @@ import { Priority, SCOPE, ROTATION, sortByPriority } from './core/priority.js';
 import { MetricsRegistry, formatMetric } from './core/metrics.js';
 import { KEY_REQ, KEY_REQ_META, groupByRequirement, requirementOf } from './core/key-requirement.js';
 import { modelInfo, formatCount, ageOf, formatPrice } from './core/model-info.js';
+import { buildExport, formatExport } from './core/export-config.js';
+import { Agent } from './core/agent.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -154,6 +156,12 @@ let URL_SORT = 'manual';  // how the drawer is ordered; see URL_SORTS
 let urlSearchTerm = '';
 let urlClass = 'all';     // 'all' | 'nokey' | 'needkey'; see URL_CLASSES
 let revealedKeys = new Set();
+// The AI tab: one conversation and one budget. `aiHistory` holds the turns that
+// were actually answered; an in-flight turn joins it only on success, so a
+// failed call can never poison the next prompt with a half-written reply.
+let aiHistory = [];
+let aiRun = null;
+const aiAgent = new Agent(router);
 
 // ---------------------------------------------------------------- helpers
 
@@ -286,7 +294,7 @@ function filterBy(filter) {
  * panes - which is what makes "API" open something on one and "Sức khoẻ" open
  * something else on the other.
  */
-const TAB_PANES = { keys: 'paneKeys', health: 'paneHealth', log: 'paneLog' };
+const TAB_PANES = { keys: 'paneKeys', health: 'paneHealth', log: 'paneLog', ai: 'paneAI' };
 
 /** Show one pane and mark the matching tab. */
 function showTab(name) {
@@ -710,9 +718,9 @@ function urlActions(provider) {
 
   const actions = [
     { icon: 'scan', label: 'Quét lại URL này', sub: 'Lấy danh sách model mới nhất', run: () => scanOne(provider) },
-    { icon: 'wrench', label: 'Quét nhiều model', sub: 'Một API key thử nhiều model của URL này', run: () => openBulkDialog(provider) },
-    { icon: 'key', label: 'Thêm API key', sub: 'Key gắn vào URL, dùng cho mọi model của nó', run: () => openAddKeyDialog(provider) },
-    { icon: 'plus', label: 'Thêm model thủ công', sub: 'Khi URL không công bố danh sách model', run: () => openManualModel(provider) },
+    { icon: 'wrench', label: 'Quét nhiều model', sub: 'Mỗi model 0đ thử lần lượt các API của URL', run: () => openBulkDialog(provider) },
+    { icon: 'info', label: 'Danh sách model free', sub: `${modelsHere.length} model 0đ · bấm để sửa/xoá/thêm`, run: () => openModelList(provider) },
+    { icon: 'key', label: 'Danh sách API', sub: `${api} API · xem hoạt động chưa · sửa/xoá/thêm`, run: () => openKeyList(provider) },
     // The label is the current rule rather than a question about it: a dropdown
     // hides the answer, and "why is this list in this order" is exactly the
     // question a user has when a model they expected is not first.
@@ -773,49 +781,6 @@ async function clearUrlSettings(provider) {
   }
   toast('Đã xoá cấu hình riêng của URL này');
   await refreshPriority();
-}
-
-/** Everything that can be done to one model, as a list. */
-function modelActions(provider, model) {
-  const ownLock = skippedFor(SCOPE.MODEL).has(model.id);
-  const urlLock = skippedFor(SCOPE.PROVIDER).has(provider.id);
-  const actions = [
-    { icon: 'info', label: 'Xem thông tin & chép', sub: 'URL, model id, mọi API của URL này', run: () => openModelDialog(provider, model) },
-    // Named here too, not only on the sheet, because the sheet is two taps away
-    // and this is the action someone reaches for when a model suddenly stops
-    // answering.
-    { icon: 'wrench', label: 'Thử model thủ công', sub: 'Gửi request thật tới đúng model này', run: () => openTestDialog(provider, model) },
-    { icon: 'scan', label: 'Quét nhiều model của URL', sub: 'Dùng 1 key thử hàng loạt model 0đ', run: () => openBulkDialog(provider) },
-  ];
-
-  if (ownLock || urlLock) {
-    actions.push({
-      icon: 'unlock',
-      label: 'Mở khoá',
-      sub: ownLock ? 'Đưa model này vào vòng quay' : 'URL phía trên đang khoá, mở cả nhánh',
-      run: () => unlockSubtree('model', model.id),
-    });
-  } else {
-    actions.push({
-      icon: 'lock',
-      label: 'Khoá model này',
-      sub: 'Không dùng model này nữa, vẫn giữ trong danh sách',
-      warn: true,
-      run: () => toggleLock('model', model.id),
-    });
-  }
-
-  actions.push({
-    icon: 'lock',
-    label: urlLock ? 'Mở khoá cả URL' : 'Khoá cả URL này',
-    sub: urlLock ? 'Mọi model và API của URL sẽ chạy lại' : 'Mọi model và API của URL dừng dùng',
-    warn: !urlLock,
-    danger: urlLock,
-    run: () => (urlLock ? unlockSubtree('provider', provider.id) : toggleLock('provider', provider.id)),
-  });
-
-  actions.push({ icon: 'copy', label: 'Chép model id', sub: model.modelId, run: () => copyText(model.modelId, 'Đã chép model') });
-  return actions;
 }
 
 /** Everything that can be done to one API key, as a list. */
@@ -1279,14 +1244,15 @@ function modelRow(provider, model, keys = []) {
   const urlLock = skippedFor(SCOPE.PROVIDER).has(provider.id);
   if (ownLock || urlLock) row.classList.add('locked');
 
-  // Tapping the model copies its id, which is the thing this screen exists to
-  // hand over: the id is what gets pasted into a client. The full card - price
-  // evidence, capabilities, measured speed - stays one tap away on the ⓘ beside
-  // it, so nothing is lost by making the row itself the copy target.
+  // Tapping the model opens its card. The id it used to copy is the top line of
+  // that card, so the copy is at most one tap further and a tap now answers
+  // "what is this", which is what the row is for. The fast action did not
+  // disappear either: the ✓ beside the row checks the model without opening
+  // anything, which is the shortcut that used to be missing.
   const openBtn = document.createElement('button');
   openBtn.className = 'modelopen';
-  openBtn.title = `Chép model id: ${model.modelId}`;
-  openBtn.setAttribute?.('aria-label', `Chép model id ${model.modelId}`);
+  openBtn.title = `Xem thông tin model ${model.modelId}`;
+  openBtn.setAttribute?.('aria-label', `Xem thông tin model ${model.modelId}`);
 
   const dot = document.createElement('span');
   dot.className = 'free';
@@ -1360,10 +1326,6 @@ function modelRow(provider, model, keys = []) {
     speed.title = 'Chạy check API để đo tốc độ của model này';
   }
 
-  // The copy glyph, so the row says what a tap does before it is tapped.
-  const tapIcon = icon('copy');
-  tapIcon.classList.add('taphint');
-
   // Name and facts travel together in the middle column, so the speed figure on
   // the right stays aligned across rows regardless of how many chips a model
   // happens to have.
@@ -1371,11 +1333,17 @@ function modelRow(provider, model, keys = []) {
   mid.className = 'mid';
   mid.append(name, facts);
 
-  openBtn.append(dot, mid, speed, tapIcon);
-  openBtn.addEventListener('click', () => copyText(model.modelId, 'Đã chép model'));
+  // No trailing info glyph: the whole row already opens the model card, so a
+  // second information mark beside it would only repeat what the row does. The
+  // fast action - check this model - is the ✓ on the right.
+  openBtn.append(dot, mid, speed);
+  openBtn.addEventListener('click', () => openModelDialog(provider, model));
 
   row.dataset.sortId = model.id;
-  attachRowMenu(row, () => modelSheet(provider, model));
+  // No long press on a model any more: a tap opens the card, where every per-
+  // model action now lives. The press had nothing left to offer that the card
+  // does not, and a gesture nobody can discover is worse than a button. The row
+  // keeps the press-hold drag it shares with every other sortable list.
   row.append(openBtn);
 
   // The URL's API keys, on a second line of the same row. They sit here rather
@@ -1389,20 +1357,13 @@ function modelRow(provider, model, keys = []) {
   }
 
   row.append(
-    iconButton('info', `Xem thông tin ${model.modelId}`, () => openModelDialog(provider, model)),
+    // The card moved to the row's own tap, so this square is free for the action
+    // a user reaches for most: check this model right now against the URL's keys,
+    // without opening anything.
+    iconButton('check', `Check nhanh ${model.modelId} với API của URL này`, () => checkModelQuick(provider, model)),
     lockButton('model', model.id, { inherited: urlLock && !ownLock })
   );
   return row;
-}
-
-/** The action sheet for one model, with its identity in the header. */
-function modelSheet(provider, model) {
-  const info = modelInfo(model);
-  const bits = [];
-  if (info.context) bits.push(`${formatCount(info.context)} ngữ cảnh`);
-  if (info.maxOutput) bits.push(`trả tối đa ${formatCount(info.maxOutput)}`);
-  const sub = bits.join(' · ') || FREE_META[model.freeStatus]?.label || '';
-  return sheet(model.modelId, sub, modelActions(provider, model));
 }
 
 function emptyNote(text) {
@@ -1503,8 +1464,106 @@ async function openModelDialog(provider, model) {
   // whole key list before anything appears, so on a slow phone the tap looks
   // like it did nothing for a second - and if the list read fails, the sheet
   // never opens at all and the tap looks broken rather than empty.
+  // A fresh card starts with no chat open: the chat belongs to one key and one
+  // model, and carrying a stale one across a re-open would show a conversation
+  // that does not match what is on screen.
+  closeChat();
   openSheet('modelDialog');
   await renderKeyRows(provider);
+}
+
+// --------------------------------------------- chat test with one API
+//
+// The card's API rows are the configuration; picking one opens a small chat
+// against that exact key and model. It is deliberately a real conversation
+// rather than a one-shot probe: the probe answers "alive", and the thing a user
+// wants to know before wiring a model into an app is "what does it actually
+// say". Nothing here writes a verdict - it is a question, not a health check.
+
+/** The key and model the chat is currently talking through, or null. */
+let chatTarget = null; // { providerId, keyId, modelId }
+
+/** Close the chat panel and forget its target. */
+function closeChat() {
+  chatTarget = null;
+  const field = $('chatField');
+  if (field) field.hidden = true;
+}
+
+/** One line in the chat log: who said it, and what they said. */
+function appendChat(role, text) {
+  const log = $('chatLog');
+  if (!log) return;
+  const line = document.createElement('div');
+  line.className = 'chatmsg ' + role;
+  const who = document.createElement('span');
+  who.className = 'chat-who';
+  who.textContent = role === 'you' ? 'Bạn' : role === 'model' ? 'Model' : 'Lỗi';
+  const body = document.createElement('span');
+  body.className = 'chat-text';
+  body.textContent = text;
+  line.append(who, body);
+  log.append(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+/** Open the chat panel for one of this URL's keys. */
+async function openChat(provider, key) {
+  chatTarget = { providerId: provider.id, keyId: key.id, modelId: currentModel?.modelId ?? null };
+  const field = $('chatField');
+  if (!field) return;
+  field.hidden = false;
+  const name = $('chatKeyName');
+  if (name) name.textContent = `${key.masked ?? ''} · ${STATUS_META[key.status]?.label ?? key.status}`;
+  const log = $('chatLog');
+  if (log) log.replaceChildren();
+  appendChat(
+    'model',
+    `Đang chat bằng ${key.masked ?? ''} với model ${chatTarget.modelId ?? '?'}. Nhập tin nhắn rồi bấm GỬI.`
+  );
+  const input = $('chatInput');
+  if (input) input.value = '';
+  input?.focus?.();
+}
+
+/** Send one chat turn to the selected key/model and show what came back. */
+async function sendChat() {
+  if (!chatTarget) return;
+  const provider = await providers.get(chatTarget.providerId);
+  const key = await storage.get('keys', chatTarget.keyId);
+  if (!provider || !key) {
+    appendChat('error', 'Không tìm thấy URL hoặc API.');
+    return;
+  }
+
+  const text = $('chatInput').value.trim() || TEST_DEFAULT_PROMPT;
+  appendChat('you', text);
+  $('chatInput').value = '';
+  const send = $('chatSend');
+  if (send) send.disabled = true;
+  try {
+    const adapter = providers.adapterFor(provider);
+    const result = await adapter.chatOnce({
+      model: chatTarget.modelId,
+      secret: key.secret,
+      message: text,
+      maxTokens: 256,
+    });
+    if (result.ok) {
+      appendChat('model', result.content ? String(result.content) : '(phản hồi rỗng)');
+      log(`chat ${provider.name}/${chatTarget.modelId} bằng ${key.masked}: khỏe`);
+    } else {
+      const label = STATUS_META[result.status]?.label ?? result.status ?? 'lỗi';
+      appendChat(
+        'error',
+        `${label}${result.httpStatus ? ` · HTTP ${result.httpStatus}` : ''}${result.error ? ` · ${result.error}` : ''}`
+      );
+    }
+  } catch (error) {
+    appendChat('error', error?.message ?? String(error));
+  } finally {
+    if (send) send.disabled = false;
+  }
 }
 
 // --------------------------------------------- manual model test
@@ -1669,16 +1728,20 @@ async function openBulkDialog(provider) {
 
   $('bulkUrl').textContent = provider.baseURL;
   $('bulkHint').textContent =
-    `${provider.name} · một API key, nhiều model. Mỗi model một request.`;
+    `${provider.name} · mỗi model 0đ thử lần lượt các API của URL, dừng ở API đầu trả lời.`;
   $('bulkCap').textContent = `tối đa ${cfg.maxLimit}`;
   $('bulkLimit').value = String(cfg.defaultLimit);
   $('bulkProgress').textContent = '';
   $('bulkStop').hidden = true;
 
+  // Keys are read in the rotation's own order, and every one is offered to the
+  // run by default: the question this sheet answers is "which models work", and
+  // a model is usable if any of the URL's keys opens it.
   const list = await keys.list(provider.id);
-  fillKeyPicker($('bulkKey'), list);
+  const ordered = applyPriority(list, SCOPE.KEY, (a, b) => Number(!!b.verifiedModelId) - Number(!!a.verifiedModelId));
+  fillBulkKeyPicker($('bulkKey'), ordered);
 
-  if (!list.length) {
+  if (!ordered.length) {
     // "No keys" and "keys not loaded" must not look the same to someone
     // deciding whether to add one or wait.
     $('bulkRows').replaceChildren(bulkEmptyNote('URL này chưa có API key.'));
@@ -1692,9 +1755,19 @@ async function openBulkDialog(provider) {
   openSheet('bulkDialog');
 }
 
-/** One picker, filled the same way in both test sheets. */
-function fillKeyPicker(picker, list) {
+/**
+ * The bulk key picker: every key by default, or one key to isolate a failure.
+ *
+ * Defaulting to all is the point of the sheet now - a model is checked against
+ * the URL's keys in turn, and the run stops at the first that answers, so the
+ * common case needs no choice at all.
+ */
+function fillBulkKeyPicker(picker, list) {
   picker.replaceChildren();
+  const all = document.createElement('option');
+  all.value = '__all__';
+  all.textContent = `Tất cả API (${list.length}) — theo thứ tự ưu tiên`;
+  picker.append(all);
   for (const key of list) {
     const opt = document.createElement('option');
     opt.value = key.id;
@@ -1703,6 +1776,7 @@ function fillKeyPicker(picker, list) {
     opt.textContent = `${key.masked} · ${STATUS_META[key.status]?.label ?? key.status}`;
     picker.append(opt);
   }
+  picker.value = '__all__';
 }
 
 function bulkEmptyNote(text) {
@@ -1761,7 +1835,11 @@ function bulkResultRow(entry) {
 
   const verdict = document.createElement('span');
   verdict.className = 'bulk-verdict';
-  verdict.textContent = entry.ok ? 'khỏe' : (STATUS_META[entry.status]?.label ?? entry.status);
+  // The winning key travels with the verdict: on a URL with several keys the
+  // useful fact is not only "this model works" but "this key opened it".
+  verdict.textContent = entry.ok
+    ? `khỏe${entry.keyMasked ? ` · ${entry.keyMasked}` : ''}`
+    : (STATUS_META[entry.status]?.label ?? entry.status);
 
   const lat = document.createElement('span');
   lat.className = 'bulk-lat';
@@ -1775,22 +1853,27 @@ async function runBulkProbe() {
   const target = bulkProviderId ? await providers.get(bulkProviderId) : null;
   if (!target) return;
 
-  const keyId = $('bulkKey').value;
-  if (!keyId) {
+  const chosen = $('bulkKey').value;
+  const list = await keys.list(target.id);
+  const ordered = applyPriority(list, SCOPE.KEY, (a, b) => Number(!!b.verifiedModelId) - Number(!!a.verifiedModelId));
+  // "Tất cả" is the default and the point: a model is checked against the URL's
+  // keys in turn. Choosing one key isolates it, for the case "why does this
+  // model fail when I expect another key to open it".
+  const keyIds = chosen && chosen !== '__all__' ? [chosen] : ordered.map((k) => k.id);
+  if (!keyIds.length) {
     $('bulkRows').replaceChildren(bulkEmptyNote('Chưa có API key nào để quét.'));
     return;
   }
 
-  const cfg = CONFIG.bulkProbe;
   const n = bulkLimitFromInput();
 
   // A sheet is modal, so a second dialog on top of it would trap the user in a
   // stack they cannot see the bottom of. confirm() is ugly and always works.
   if (!bulkConfirmed) {
     const ok = globalThis.confirm?.(
-      `Sẽ gửi ${n} request tới ${target.name}.
+      `Sẽ thử ${n} model 0đ với ${keyIds.length} API tới ${target.name}.
 ` +
-      `Mỗi model 1 request, khoảng ${(n * cfg.maxTokens).toLocaleString('vi-VN')} token output.
+      `Mỗi model dừng ngay ở API đầu tiên trả lời, nên tối đa ${(n * keyIds.length).toLocaleString('vi-VN')} request.
 
 ` +
       `Bấm OK để bắt đầu.`
@@ -1807,15 +1890,15 @@ async function runBulkProbe() {
   box.replaceChildren();
 
   try {
-    const summary = await bulkProber.run({
+    const summary = await bulkProber.runAcrossKeys({
       providerId: target.id,
-      keyId,
+      keyIds,
       limit: n,
       run: currentRun,
       onProgress: ({ entry, index, total }) => {
         // One row at a time rather than a full render(): re-rendering the sheet
         // two hundred times would drop the scroll position and fight the finger.
-        box.append(bulkResultRow(entry));
+        if (entry) box.append(bulkResultRow(entry));
         $('bulkProgress').textContent = `${index}/${total}`;
       },
     });
@@ -1829,7 +1912,7 @@ async function runBulkProbe() {
           ? 'đã dừng theo yêu cầu'
           : summary.stopReason === STOP.QUOTA
             ? 'dừng: hết quota'
-            : 'dừng: key có vấn đề, thử 5 model liên tiếp cùng lỗi'
+            : 'dừng: mọi API đều có vấn đề'
       );
     }
     log(lines.join(' · '));
@@ -1925,6 +2008,10 @@ function keyRow(provider, key) {
     : (meta.label ?? key.status);
   stat.append(dot, word);
   flex.append(stat);
+  // The masked/status block is the chat target: tapping the key itself asks
+  // "what does this key say", while the buttons beside it do their own thing.
+  flex.title = 'Bấm để chat thử với API này';
+  flex.addEventListener('click', () => openChat(provider, key));
   row.append(flex);
 
   const shown = revealedKeys.has(key.id);
@@ -2126,6 +2213,10 @@ async function checkOneKey(provider, key) {
     setBusy(false);
     await render();
     await renderKeyRows(provider);
+    // The API list is its own surface with its own check buttons, so a verdict
+    // from one of them has to repaint that list too - otherwise the dot beside
+    // the key it just checked would keep the old colour.
+    if ($('keyDialog')?.open) await renderKeyList(provider);
   }
 }
 
@@ -2145,13 +2236,164 @@ async function checkAllKeysOfCurrentModel() {
   }
 }
 
+/**
+ * Check one model against this URL's keys, stopping at the first that answers.
+ *
+ * This is the fast path the row's ✓ runs: no sheet, no picker, no prompt - just
+ * "does this model work right now". It spends at most one request per key and
+ * writes exactly what any other check writes, so the speed line and the health
+ * pane update from it. Keys are tried in the order the rotation would, so the
+ * check agrees with what the router would actually do.
+ */
+async function checkModelQuick(provider, model) {
+  const list = await keys.list(provider.id);
+  if (!list.length) {
+    toast('URL này chưa có API để check');
+    return;
+  }
+  const ordered = applyPriority(list, SCOPE.KEY, (a, b) => Number(!!b.verifiedModelId) - Number(!!a.verifiedModelId));
+  setBusy(true);
+  try {
+    const adapter = providers.adapterFor(provider);
+    let winner = null;
+    let last = null;
+    for (const key of ordered) {
+      const result = await adapter.probeWithMetrics({
+        model: model.modelId,
+        secret: key.secret,
+        maxTokens: CONFIG.probe.maxTokens,
+      });
+      last = result;
+      const { mapping } = await mapper.upsert({ providerId: provider.id, modelId: model.modelId, keyId: key.id });
+      await mapper.record(mapping.id, result);
+      if (result.ok) {
+        if (result.metrics) await metrics.record(provider.id, model.modelId, result.metrics);
+        winner = key;
+        break;
+      }
+    }
+    if (winner) {
+      log(`check ${provider.name}/${model.modelId}: khỏe với ${winner.masked}`);
+      toast('Model dùng được');
+    } else {
+      log(
+        `check ${provider.name}/${model.modelId}: không API nào chạy được ` +
+        `(${STATUS_META[last?.status]?.label ?? 'lỗi'})`
+      );
+      toast('Không API nào chạy được');
+    }
+  } finally {
+    setBusy(false);
+    await render();
+    if ($('modelDialog')?.open && currentModel?.providerId === provider.id) await renderKeyRows(provider);
+  }
+}
+
 // ------------------------------------------------------- add key
 
+/** The key row being edited in the API-list dialog, or null for a fresh add. */
+let keyEditingId = null;
+
+/**
+ * One dialog, two jobs: a list of this URL's API keys, and the form that adds
+ * or edits one. The list is the default because "quản lý API" is mostly
+ * looking at what is there; the form is a step inside it.
+ */
+function setKeyDialogMode(mode) {
+  const listMode = mode === 'list';
+  const list = $('keyList');
+  const addBtn = $('keyListAdd');
+  const form = $('keyForm');
+  if (list) list.hidden = !listMode;
+  if (addBtn) addBtn.hidden = !listMode;
+  if (form) form.hidden = listMode;
+  const confirm = $('keyConfirm');
+  if (confirm) confirm.hidden = listMode;
+  const cancel = $('keyCancel');
+  if (cancel) cancel.textContent = listMode ? 'Đóng' : 'Huỷ';
+}
+
 function openAddKeyDialog(provider) {
+  keyEditingId = null;
   $('keyHint').textContent = `${provider.name} — ${provider.baseURL}`;
   $('keySecret').value = '';
+  const confirm = $('keyConfirm');
+  if (confirm) { confirm.textContent = 'Thêm + check'; confirm.hidden = false; }
   $('keyDialog').dataset.providerId = provider.id;
+  setKeyDialogMode('form');
   openSheet('keyDialog');
+  $('keySecret').focus();
+}
+
+/** Open the API list for one URL, with add / edit / delete inside it. */
+async function openKeyList(provider) {
+  keyEditingId = null;
+  $('keyDialog').dataset.providerId = provider.id;
+  await renderKeyList(provider);
+  setKeyDialogMode('list');
+  openSheet('keyDialog');
+}
+
+/**
+ * The list of a URL's keys, each labelled by whether it works.
+ *
+ * "Hoạt động" is the whole point of this screen: a masked key says nothing
+ * about whether it does anything, so each row pairs the dot with a word and,
+ * when the key has proven itself, names the model it was checked against.
+ */
+async function renderKeyList(provider) {
+  const box = $('keyList');
+  box.replaceChildren();
+  const list = await keys.list(provider.id);
+  $('keyHint').textContent = `${provider.name} — ${list.length} API`;
+  if (!list.length) {
+    box.append(emptyNote('URL này chưa có API nào. Bấm “+ Thêm API” để dán key, hệ thống sẽ check ngay.'));
+    return;
+  }
+  const ordered = applyPriority(list, SCOPE.KEY, (a, b) => Number(!!b.verifiedModelId) - Number(!!a.verifiedModelId));
+  for (const key of ordered) box.append(keyListRow(provider, key));
+}
+
+function keyListRow(provider, key) {
+  const row = document.createElement('div');
+  row.className = 'listrow';
+
+  const dot = document.createElement('span');
+  dot.className = 'kdot ' + key.status;
+
+  const name = document.createElement('span');
+  name.className = 'lname';
+  name.textContent = key.masked ?? '';
+
+  const meta = document.createElement('span');
+  meta.className = 'lmeta';
+  meta.textContent = key.verifiedModelId
+    ? `hoạt động · qua ${key.verifiedModelId}`
+    : (STATUS_META[key.status]?.label ?? key.status);
+
+  const grow = document.createElement('span');
+  grow.className = 'grow';
+  grow.append(name, meta);
+
+  const check = iconButton('check', 'Check API này', () => checkOneKey(provider, key));
+  const edit = iconButton('wrench', 'Đổi key / thay secret', () => startEditKey(provider, key));
+  const del = iconButton('trash', 'Xoá API', () => {
+    $('keyDialog').close();
+    openDeleteDialog(provider, key);
+  }, 'iconbtn del');
+
+  row.append(dot, grow, check, edit, del);
+  return row;
+}
+
+/** Swap the dialog into the form, preloaded for replacing one key's secret. */
+function startEditKey(provider, key) {
+  keyEditingId = key.id;
+  $('keySecret').value = '';
+  const confirm = $('keyConfirm');
+  if (confirm) { confirm.textContent = 'Lưu key'; confirm.hidden = false; }
+  $('keyHint').textContent = `Thay secret cho ${key.masked} — ${provider.name}`;
+  setKeyDialogMode('form');
   $('keySecret').focus();
 }
 
@@ -2168,18 +2410,40 @@ async function confirmAddKey() {
   // block-scoped const was not visible there, so every add threw.
   let provider = null;
   try {
-    const result = await keys.add({ providerId, secret });
     provider = await providers.get(providerId);
+
+    // Editing replaces the secret in place. Deleting and re-adding would
+    // tombstone the old fingerprint, and pasting that same key again would then
+    // be refused - a strange punishment for correcting a typo.
+    if (keyEditingId) {
+      const fingerprint = await fingerprintSecret(secret);
+      await keys.update(keyEditingId, {
+        secret,
+        fingerprint,
+        masked: maskSecret(secret),
+        status: STATUS.UNTESTED,
+        verifiedModelId: null,
+        lastError: null,
+      });
+      const verified = await verifier.verifyKey({ keyId: keyEditingId });
+      log(`đổi key → ${maskSecret(secret)} · ${verified.ok ? `khỏe qua ${verified.verifiedModelId}` : `lỗi: ${verified.reason ?? '?'}`}`);
+      toast(verified.ok ? 'Key mới dùng được' : 'Key mới lỗi');
+      keyEditingId = null;
+      const confirm = $('keyConfirm');
+      if (confirm) confirm.textContent = 'Thêm + check';
+      if (provider) { await renderKeyList(provider); setKeyDialogMode('list'); }
+      return;
+    }
+
+    const result = await keys.add({ providerId, secret });
 
     if (result.reason === 'BLOCKED') {
       log('key này đã bị xoá khỏi URL, không thêm lại');
       toast('Key đã xoá trước đó');
-      $('keyDialog').close();
       return;
     }
     if (result.reason === 'DUPLICATE') {
       toast('URL này đã có key này rồi');
-      $('keyDialog').close();
       return;
     }
 
@@ -2189,7 +2453,9 @@ async function confirmAddKey() {
       (verified.ok ? `khỏe qua ${verified.verifiedModelId}` : `lỗi: ${verified.reason ?? '?'}`)
     );
     toast(verified.ok ? 'Key dùng được' : 'Key lỗi');
-    $('keyDialog').close();
+    // Back to the list, not shut: adding one key usually means wanting to see
+    // it in place, and closing the sheet would make the user reopen it.
+    if (provider) { await renderKeyList(provider); setKeyDialogMode('list'); }
   } finally {
     setBusy(false);
     await render();
@@ -2327,12 +2593,119 @@ function parseManualModelList(value) {
 
 // ------------------------------------------------------- add model
 
+/** The model row being edited in the model-list dialog, or null for a fresh add. */
+let manualEditingId = null;
+
+/**
+ * The same dual-mode dialog as the API list: a list of this URL's 0đ models,
+ * and the form that adds or edits one.
+ */
+function setModelDialogMode(mode) {
+  const listMode = mode === 'list';
+  const list = $('manualList');
+  const addBtn = $('manualListAdd');
+  const form = $('manualForm');
+  if (list) list.hidden = !listMode;
+  if (addBtn) addBtn.hidden = !listMode;
+  if (form) form.hidden = listMode;
+  const confirm = $('manualConfirm');
+  if (confirm) confirm.hidden = listMode;
+  const cancel = $('manualCancel');
+  if (cancel) cancel.textContent = listMode ? 'Đóng' : 'Huỷ';
+}
+
+/** Open the 0đ model list for one URL, with add / edit / delete inside it. */
+async function openModelList(provider) {
+  manualEditingId = null;
+  $('modelAddDialog').dataset.providerId = provider.id;
+  await renderModelList(provider);
+  setModelDialogMode('list');
+  openSheet('modelAddDialog');
+}
+
+/**
+ * The list of a URL's 0đ models, each editable and deletable in place.
+ *
+ * Only the models that appear in the main list are shown: a paid model belongs
+ * to storage but not to this screen, and offering an edit button for something
+ * the list refuses to draw would be a control with no visible effect.
+ */
+async function renderModelList(provider) {
+  const box = $('manualList');
+  box.replaceChildren();
+  const all = (await models.list(provider.id)).filter((m) => m.freeStatus !== FREE.PAID);
+  $('manualHint').textContent = `${provider.name} — ${all.length} model 0đ`;
+  if (!all.length) {
+    box.append(emptyNote('URL này chưa có model 0đ nào. Bấm “+ Thêm model” để thêm tay.'));
+    return;
+  }
+  for (const model of all) box.append(modelListRow(provider, model));
+}
+
+function modelListRow(provider, model) {
+  const row = document.createElement('div');
+  row.className = 'listrow';
+
+  const dot = document.createElement('span');
+  dot.className = 'kdot ' + (model.source === MODEL_SOURCE.MANUAL ? 'UNTESTED' : 'HEALTHY');
+
+  const name = document.createElement('span');
+  name.className = 'lname';
+  name.textContent = model.modelId;
+
+  const meta = document.createElement('span');
+  meta.className = 'lmeta';
+  meta.textContent =
+    `${FREE_META[model.freeStatus]?.label ?? model.freeStatus ?? ''}` +
+    (model.source === MODEL_SOURCE.MANUAL ? ' · thêm tay' : '');
+
+  const grow = document.createElement('span');
+  grow.className = 'grow';
+  grow.append(name, meta);
+
+  const edit = iconButton('wrench', 'Sửa model này', () => startEditModel(provider, model));
+  const del = iconButton('trash', 'Xoá model này', () => removeModel(provider, model), 'iconbtn del');
+
+  row.append(dot, grow, edit, del);
+  return row;
+}
+
+/** Switch the dialog to the add form. Called from the list's "+ Thêm model". */
 function openManualModel(provider) {
+  manualEditingId = null;
   $('manualHint').textContent = `${provider.name} — ${provider.baseURL}`;
   $('manualModel').value = '';
+  $('manualFree').value = 'FREE_LIKELY';
   $('modelAddDialog').dataset.providerId = provider.id;
+  const confirm = $('manualConfirm');
+  if (confirm) { confirm.textContent = 'Thêm'; confirm.hidden = false; }
+  setModelDialogMode('form');
+  // Reopened so the form gets focus even when the list sheet was already open.
   openSheet('modelAddDialog');
   $('manualModel').focus();
+}
+
+/** Preload the form with an existing model, for editing. */
+function startEditModel(provider, model) {
+  manualEditingId = model.id;
+  $('manualHint').textContent = `Sửa model · ${provider.name}`;
+  $('manualModel').value = model.modelId;
+  $('manualFree').value = model.freeStatus ?? 'FREE_LIKELY';
+  const confirm = $('manualConfirm');
+  if (confirm) { confirm.textContent = 'Lưu'; confirm.hidden = false; }
+  setModelDialogMode('form');
+  $('manualModel').focus();
+}
+
+/** Delete a model, after a confirm that names it. */
+async function removeModel(provider, model) {
+  const ok = globalThis.confirm?.(`Xoá model “${model.modelId}” khỏi URL này?`) ?? true;
+  if (!ok) return;
+  await models.remove(model.id);
+  log(`đã xoá model ${model.modelId}`);
+  toast('Đã xoá model');
+  await render();
+  await renderModelList(provider);
 }
 
 async function confirmAddModel() {
@@ -2342,19 +2715,211 @@ async function confirmAddModel() {
     toast('Nhập tên model');
     return;
   }
-  const result = await models.addManual({
-    providerId,
-    modelId,
-    freeStatus: $('manualFree').value,
-  });
-  if (result.reason === 'DUPLICATE') {
-    toast('Model này đã có');
+  const freeStatus = $('manualFree').value;
+
+  if (manualEditingId) {
+    await models.update(manualEditingId, { modelId, displayName: modelId, freeStatus });
+    log(`sửa model: ${modelId}`);
+    toast('Đã lưu');
+    manualEditingId = null;
   } else {
-    log(`+ model thủ công: ${modelId}`);
-    toast('Đã thêm');
+    const result = await models.addManual({ providerId, modelId, freeStatus });
+    if (result.reason === 'DUPLICATE') {
+      toast('Model này đã có');
+    } else {
+      log(`+ model thủ công: ${modelId}`);
+      toast('Đã thêm');
+    }
   }
-  $('modelAddDialog').close();
+
   await render();
+  const provider = await providers.get(providerId);
+  if (provider) {
+    await renderModelList(provider);
+    setModelDialogMode('list');
+  } else {
+    $('modelAddDialog').close();
+  }
+}
+
+// ---------------------------------------------------------------- AI tab
+
+/**
+ * One bubble in the AI log.
+ *
+ * Returns the body element, because a streamed answer is written into the
+ * bubble token by token rather than being re-rendered per delta - one node that
+ * grows beats a hundred that replace each other.
+ */
+function aiBubble(role, text = '') {
+  const log_ = $('aiLog');
+  const line = document.createElement('div');
+  line.className = 'aibub ' + role;
+  const who = document.createElement('span');
+  who.className = 'aiwho';
+  who.textContent = role === 'you' ? 'Bạn' : role === 'ai' ? 'AI' : 'Lỗi';
+  const body = document.createElement('span');
+  body.className = 'aitext';
+  body.textContent = text;
+  line.append(who, body);
+  log_?.append(line);
+  if (log_) log_.scrollTop = log_.scrollHeight;
+  return body;
+}
+
+/** Show how much of the session's token budget is left. */
+function aiPaintBudget() {
+  const el = $('aiBudget');
+  if (el) el.textContent = `${aiAgent.remaining.toLocaleString('vi-VN')} token còn lại`;
+}
+
+/**
+ * Send one turn through the router and stream the answer into its bubble.
+ *
+ * Everything about *which* URL, model and key answers - and about rotating to
+ * another one when a key is expired or out of quota - belongs to the router.
+ * This function only orders the conversation and paints it.
+ */
+async function sendAiTurn() {
+  if (aiRun) return;
+  const input = $('aiInput');
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  aiBubble('you', text);
+
+  const target = aiBubble('ai', '');
+  const run = { cancelled: () => false, cancel: () => { run.cancelled = () => true; } };
+  aiRun = run;
+  $('aiSend').disabled = true;
+  $('aiStop').hidden = false;
+  aiPaintBudget();
+
+  const who = $('aiWho');
+  let used = null;
+  let streamed = '';
+  try {
+    const result = await aiAgent.turn({
+      history: aiHistory,
+      userText: text,
+      run,
+      onToken: (delta) => {
+        streamed += delta;
+        target.textContent = streamed;
+        const log_ = $('aiLog');
+        if (log_) log_.scrollTop = log_.scrollHeight;
+      },
+      onEvent: (event) => {
+        if (event.stage === 'attempt') {
+          used = `${event.provider} · ${event.model}`;
+          if (who) who.textContent = `đang gọi ${used}`;
+        }
+        if (event.stage === 'failed') {
+          log(`AI thử ${event.provider}/${event.model ?? ''}: ${event.status ?? event.error ?? 'lỗi'}`);
+        }
+      },
+    });
+
+    if (result.ok) {
+      aiHistory.push({ role: 'user', content: text });
+      aiHistory.push({ role: 'assistant', content: result.content ?? '' });
+      target.textContent = result.content || '(rỗng)';
+      if (who) who.textContent = used ?? `${result.provider} · ${result.model}`;
+      log(`AI trả lời qua ${result.provider}/${result.model}`);
+    } else if (result.partial) {
+      // Half the answer is already on screen. Swapping in another model's reply
+      // mid-sentence would splice two answers together, so the part that arrived
+      // is kept and the stop is named instead.
+      target.textContent = `${streamed}\n… (dừng giữa chừng: ${result.status ?? 'lỗi'})`;
+      log(`AI dừng giữa chừng: ${result.status ?? 'lỗi'}`);
+    } else {
+      const reason =
+        result.reason === 'BUDGET_EXHAUSTED' ? 'đã hết hạn mức token của phiên'
+          : result.reason === 'CANCELLED' ? 'đã dừng theo yêu cầu'
+            : result.reason === 'NO_ELIGIBLE_MAPPING' ? 'không có URL/key nào dùng được — hãy thêm key hoặc quét trước'
+              : `không gọi được (${result.reason ?? 'lỗi'})`;
+      target.textContent = streamed || `Không trả lời được: ${reason}`;
+      log(`AI lỗi: ${reason}`);
+    }
+  } finally {
+    aiRun = null;
+    $('aiSend').disabled = false;
+    $('aiStop').hidden = true;
+    if (who && !used) who.textContent = 'chưa gọi';
+    aiPaintBudget();
+  }
+}
+
+// ------------------------------------------------------- export config
+
+/**
+ * The working configuration, built once when the export sheet opens.
+ *
+ * It is kept in a module variable rather than rebuilt on every format change
+ * because two of its three pieces - the moment of export and which mapping is
+ * the default - would otherwise shift under the user as they flipped formats.
+ */
+let exportData = null;
+
+/** Gather storage, build the export, and show the sheet. */
+async function openExportDialog() {
+  const [providerRows, keyRows, modelRows, mappingRows] = await Promise.all([
+    providers.list(),
+    keys.list(),
+    models.list(),
+    mapper.list(),
+  ]);
+  if (!priorityState) await loadPriority();
+
+  exportData = buildExport({
+    providers: providerRows,
+    keys: keyRows,
+    models: modelRows,
+    mappings: mappingRows,
+    skipped: {
+      provider: [...skippedFor(SCOPE.PROVIDER)],
+      model: [...skippedFor(SCOPE.MODEL)],
+      key: [...skippedFor(SCOPE.KEY)],
+    },
+  });
+
+  const count = $('exportCount');
+  if (count) {
+    count.textContent = exportData.endpoints.length
+      ? `${exportData.endpoints.length} URL đang hoạt động`
+      : 'chưa có cấu hình nào hoạt động';
+  }
+
+  renderExport();
+  openSheet('exportDialog');
+}
+
+/** The one place the exported text - keys and all - becomes text on screen. */
+function renderExport() {
+  const out = $('exportOut');
+  if (!out) return;
+  const format = $('exportFormat')?.value ?? 'env';
+  out.textContent = exportData ? formatExport(exportData, format) : '';
+}
+
+/** Save text to a file, falling back to the clipboard where download is absent. */
+function downloadText(filename, text) {
+  try {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast(`Đã tải ${filename}`);
+  } catch {
+    // A headless run or a browser without Blob still gets the file's contents.
+    copyText(text, 'Không tải được, đã chép cấu hình');
+  }
 }
 
 // ------------------------------------------------------- wiring
@@ -2416,9 +2981,74 @@ $('bulkDialog').addEventListener('cancel', (event) => {
   closeBulk();
 });
 $('testClose').addEventListener('click', () => $('testDialog').close());
-$('modelClose').addEventListener('click', () => $('modelDialog').close());
+$('modelClose').addEventListener('click', () => {
+  closeChat();
+  $('modelDialog').close();
+});
 $('keyConfirm').addEventListener('click', confirmAddKey);
 $('keyCancel').addEventListener('click', () => $('keyDialog').close());
+// The two list dialogs share their form and their list, so each dialog has one
+// button that drops back into "add": the list is the default view and the form
+// is a step inside it.
+$('keyListAdd').addEventListener('click', async () => {
+  const provider = await providers.get($('keyDialog').dataset.providerId);
+  if (provider) openAddKeyDialog(provider);
+});
+$('manualListAdd').addEventListener('click', async () => {
+  const provider = await providers.get($('modelAddDialog').dataset.providerId);
+  if (provider) openManualModel(provider);
+});
+// The chat panel: GỬI sends, Enter sends, and XOÁ API removes the key it is
+// talking through - the delete path is the same dialog as everywhere else.
+$('chatSend').addEventListener('click', sendChat);
+$('chatInput').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') sendChat();
+});
+$('chatDelete').addEventListener('click', async () => {
+  if (!chatTarget) return;
+  const provider = await providers.get(chatTarget.providerId);
+  const key = await storage.get('keys', chatTarget.keyId);
+  if (!provider || !key) return;
+  closeChat();
+  openDeleteDialog(provider, key);
+});
+
+// Export: the sheet is built fresh each time it opens, so a key added a moment
+// ago is already in the file. Changing the format repaints from the same data.
+$('btnExport').addEventListener('click', () => {
+  openDrawer(false);
+  openExportDialog();
+});
+$('exportFormat').addEventListener('change', renderExport);
+$('exportCopy').addEventListener('click', () => {
+  if (!exportData) return;
+  copyText(formatExport(exportData, $('exportFormat').value), 'Đã chép cấu hình');
+});
+$('exportDownload').addEventListener('click', () => {
+  if (!exportData) return;
+  const format = $('exportFormat').value;
+  const ext = { env: 'env', json: 'json', yaml: 'yaml' }[format] ?? 'txt';
+  downloadText(`freeai-config.${ext}`, formatExport(exportData, format));
+});
+$('exportClose').addEventListener('click', () => $('exportDialog').close());
+$('exportDone').addEventListener('click', () => $('exportDialog').close());
+
+// The AI tab. Enter alone is a newline - a chat box that sends on Enter is how
+// a half-typed question gets sent - so Ctrl/⌘+Enter sends.
+$('aiSend').addEventListener('click', sendAiTurn);
+$('aiStop').addEventListener('click', () => aiRun?.cancel());
+$('aiClear').addEventListener('click', () => {
+  aiHistory = [];
+  $('aiLog').replaceChildren();
+  aiPaintBudget();
+});
+$('aiInput').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    sendAiTurn();
+  }
+});
+aiPaintBudget();
 $('delConfirm').addEventListener('click', confirmDeleteKey);
 $('delRestore').addEventListener('click', restoreDeletedKey);
 $('delCancel').addEventListener('click', () => $('delDialog').close());

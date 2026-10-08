@@ -198,4 +198,160 @@ export class BulkProbe {
       healthy: results.filter((r) => r.ok).length,
     };
   }
+
+  /**
+   * Many models, many keys: for each free model, try this URL's keys in the
+   * order given and stop at the first one that answers.
+   *
+   * This is the shape the "quét nhiều model" button runs. The single-key `run`
+   * above answers "how many models does this one key open"; this answers the
+   * question a user with several keys actually has - "is this model usable at
+   * all, and by which key". Trying every key against every model would be an
+   * N×M bill for one fact per pair; stopping at the first success is the cheap
+   * way to learn the only thing the list shows: which model works.
+   *
+   * A key that fails the same way on enough consecutive models is treated as
+   * dead and skipped for the rest of the run, exactly as in `run`, so one bad
+   * secret cannot spend the whole budget. A model refused by every key is still
+   * reported, with the last refusal as its reason.
+   *
+   * Returns { results, stopped, stopReason, requests, healthy, keyIds } where
+   * each result is { modelId, keyId, keyMasked, ok, status, latencyMs, ttftMs,
+   * tokensPerSec, error }.
+   */
+  async runAcrossKeys({ providerId, keyIds = [], limit = CONFIG.bulkProbe.defaultLimit, run, onProgress } = {}) {
+    const cfg = CONFIG.bulkProbe;
+    const results = [];
+    let requests = 0;
+    let stopped = false;
+    let stopReason = null;
+
+    const provider = await this.providers.get(providerId);
+    if (!provider) {
+      return { results, stopped: false, stopReason: 'PROVIDER_NOT_FOUND', requests: 0, healthy: 0, keyIds: [] };
+    }
+
+    const slots = [];
+    for (const id of keyIds) {
+      const row = await this.storage.get('keys', id);
+      if (row) slots.push({ row, streak: 0, dead: false, deadReason: null });
+    }
+    if (!slots.length) {
+      return { results, stopped: false, stopReason: 'KEY_NOT_FOUND', requests: 0, healthy: 0, keyIds: [] };
+    }
+
+    const adapter = this.providers.adapterFor(provider);
+    const candidates = await this.candidates(providerId, { limit });
+    if (!candidates.length) {
+      return { results, stopped: false, stopReason: 'NO_MODELS', requests: 0, healthy: 0, keyIds: slots.map((s) => s.row.id) };
+    }
+
+    // The key is marked once, when it has failed enough, and only from the
+    // failures that point at the secret - never because one model refused it.
+    const markKey = async (slot, status, error) => {
+      await this.storage.put('keys', {
+        ...slot.row,
+        status,
+        lastCheckedAt: isoNow(),
+        lastError: sanitizeError(error ?? '', [slot.row.secret]),
+        updatedAt: isoNow(),
+      });
+    };
+
+    for (const model of candidates) {
+      if (run?.cancelled()) {
+        stopped = true;
+        stopReason = STOP.CANCELLED;
+        break;
+      }
+
+      let entry = null;
+      for (const slot of slots) {
+        if (slot.dead) continue;
+        const key = slot.row;
+        const result = await adapter.probeWithMetrics({
+          model: model.modelId,
+          secret: key.secret,
+          maxTokens: cfg.maxTokens,
+        });
+        requests += 1;
+
+        const ok = Boolean(result.ok);
+        const status = ok ? STATUS.HEALTHY : (result.status ?? STATUS.UNKNOWN_ERROR);
+
+        const { mapping } = await this.mapper.upsert({
+          providerId,
+          modelId: model.modelId,
+          keyId: key.id,
+        });
+        await this.mapper.record(mapping.id, result);
+
+        if (ok) {
+          if (result.metrics) await this.metrics.record(providerId, model.modelId, result.metrics);
+          slot.streak = 0;
+          entry = {
+            modelId: model.modelId,
+            keyId: key.id,
+            keyMasked: key.masked,
+            ok: true,
+            status,
+            latencyMs: result.latencyMs ?? null,
+            ttftMs: result.metrics?.ttftMs ?? null,
+            tokensPerSec: result.metrics?.tokensPerSec ?? null,
+            error: null,
+          };
+          break;
+        }
+
+        entry = {
+          modelId: model.modelId,
+          keyId: key.id,
+          keyMasked: key.masked,
+          ok: false,
+          status,
+          latencyMs: result.latencyMs ?? null,
+          ttftMs: null,
+          tokensPerSec: null,
+          error: result.error ?? null,
+        };
+
+        // Quota is terminal for that key only: another key may still answer,
+        // so it is retired rather than stopping the whole run.
+        if (status === STATUS.QUOTA_EXHAUSTED) {
+          slot.dead = true;
+          slot.deadReason = STOP.QUOTA;
+          await markKey(slot, STATUS.QUOTA_EXHAUSTED, result.error);
+          continue;
+        }
+
+        if (KEY_FAILURES.has(status)) {
+          slot.streak += 1;
+          if (slot.streak >= cfg.keyFailureStreak) {
+            slot.dead = true;
+            slot.deadReason = STOP.KEY_SUSPECT;
+            await markKey(slot, status, result.error);
+          }
+        }
+      }
+
+      if (entry) results.push(entry);
+      onProgress?.({ entry, index: results.length, total: candidates.length, model });
+
+      // No key left that could answer, so there is nothing more to learn.
+      if (slots.every((s) => s.dead)) {
+        stopped = true;
+        stopReason = slots.some((s) => s.deadReason === STOP.QUOTA) ? STOP.QUOTA : STOP.KEY_SUSPECT;
+        break;
+      }
+    }
+
+    return {
+      results,
+      stopped,
+      stopReason,
+      requests,
+      healthy: results.filter((r) => r.ok).length,
+      keyIds: slots.map((s) => s.row.id),
+    };
+  }
 }

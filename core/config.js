@@ -62,6 +62,20 @@ export const CONFIG = {
     keyFailureStreak: 5,
   },
 
+  // ---- Agent / chat ----
+  // One turn of a real conversation through the router. Every ceiling lives
+  // here and is enforced by core, not by the UI, so a caller that forgets the
+  // budget cannot spend more than this: the app is built around free quota, and
+  // an unbounded loop is how free quota disappears.
+  agent: {
+    // Per request. Large enough for a real answer, small enough that a runaway
+    // model stops quickly on a metered key.
+    maxTokensPerCall: 1024,
+    // Across one session, summed from the usage the provider reports.
+    maxTotalTokens: 20000,
+    defaultTemperature: 0.3,
+  },
+
   // ---- Cache (plan 9) ----
   // Opening the UI must not re-scan the world. Cached rows render instantly
   // and a stale refresh runs in the background.

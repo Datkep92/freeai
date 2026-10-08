@@ -76,7 +76,7 @@ class El {
   close(){ this.open = false; }
 }
 const registry = new Map();
-for (const id of ['btnScanAll','btnAddUrl','appbarAddUrl','btnCancel','searchBox','treeRoot','keysRoot','healthRoot','logRoot','toast','filterCount','paneKeys','paneHealth','paneLog','modelDialog','modelTitle','modelHint','boxUrl','boxModel','keyRows','keyCount','btnCheckOne','btnAddKey','modelClose','keyDialog','keyHint','keySecret','keyConfirm','keyCancel','delDialog','delHint','delSecret','delConfirm','delRestore','delCancel','addUrlDialog','urlName','urlBase','urlConfirm','urlCancel','modelAddDialog','manualHint','manualModel','manualFree','manualConfirm','manualCancel','sidebar','sidebarRoot','btnMenu','scrim','treeTitle','lockAllUrls','lockAllKeys','modelInfo','btnTestModel','urlSearch','urlSearchClear','urlClass','urlSortFree','sideHint','scopeBar','scopeName','scopeUrl','scopeClear','btnBulk','bulkDialog','bulkRows','bulkRun','bulkKey','bulkLimit','bulkEstimate','bulkProgress','testDialog','testKey','testModel','testUrl','testRun','testResult','rowMenu','rowMenuTitle','rowMenuSub','rowMenuActions','rowMenuCancel']) {
+for (const id of ['btnScanAll','btnAddUrl','appbarAddUrl','btnCancel','searchBox','treeRoot','keysRoot','healthRoot','logRoot','toast','filterCount','paneKeys','paneHealth','paneLog','modelDialog','modelTitle','modelHint','boxUrl','boxModel','keyRows','keyCount','btnCheckOne','btnAddKey','modelClose','keyDialog','keyHint','keySecret','keyConfirm','keyCancel','delDialog','delHint','delSecret','delConfirm','delRestore','delCancel','addUrlDialog','urlName','urlBase','urlConfirm','urlCancel','modelAddDialog','manualHint','manualModel','manualFree','manualConfirm','manualCancel','sidebar','sidebarRoot','btnMenu','scrim','treeTitle','lockAllUrls','lockAllKeys','modelInfo','btnTestModel','urlSearch','urlSearchClear','urlClass','urlSortFree','sideHint','scopeBar','scopeName','scopeUrl','scopeClear','btnBulk','bulkDialog','bulkRows','bulkRun','bulkKey','bulkLimit','bulkEstimate','bulkProgress','testDialog','testKey','testModel','testUrl','testRun','testResult','chatField','chatKeyName','chatLog','chatInput','chatSend','chatDelete','keyList','keyListAdd','keyForm','manualList','manualListAdd','manualForm','btnExport','exportDialog','exportHint','exportCount','exportFormat','exportOut','exportCopy','exportDownload','exportClose','exportDone','rowMenu','rowMenuTitle','rowMenuSub','rowMenuActions','rowMenuCancel','paneAI','aiWho','aiBudget','aiLog','aiInput','aiSend','aiStop','aiClear']) {
   registry.set(id, new El());
 }
 globalThis.document = {
@@ -214,22 +214,18 @@ console.log(
 );
 console.log('toc do:', modelRows.map((r) => kid(kid(r, 'modelopen'), 'speed')?.textContent).join(' | '));
 
-// The row is the copy target now; the ⓘ beside it opens the card. Both are
+// The row opens the card now, and the ✓ beside it checks the model. Both are
 // driven, because both are what a person does with this screen.
 if (!modelRows.length) throw new Error('khong co model free nao de bam');
 const firstRow = modelRows[0];
 const firstId = modelName(firstRow);
 const beforeRow = copied.length;
 kid(firstRow, 'modelopen')._listeners.click.forEach((fn) => fn());
-await new Promise((r) => setTimeout(r, 80));
-console.log(
-  'bam dong model -> chep:',
-  copied.slice(beforeRow).join(', ')
-);
-console.log(
-  'chep dung model id:',
-  copied.includes(firstId) ? `OK (${firstId})` : `LOI (mong doi ${firstId})`
-);
+await new Promise((r) => setTimeout(r, 200));
+console.log('bam dong model -> mo the thong tin:', registry.get('modelDialog').open ? 'OK' : 'khong mo duoc');
+console.log('bam dong model khong con chep:', copied.length === beforeRow ? 'OK' : 'van chep');
+const checkBtn = firstRow.children.find((c) => c.title && c.title.includes('Check nhanh'));
+console.log('nut ✓ tren dong:', checkBtn ? 'co' : 'khong co');
 
 // The URL's APIs, on the row, masked - the third thing this screen is for.
 const apiChips = kid(firstRow, 'apichips')?.children ?? [];
@@ -243,9 +239,6 @@ console.log(
     ? 'LOI: co'
     : 'khong'
 );
-
-kid(firstRow, 'iconbtn')._listeners.click.forEach((fn) => fn());
-await new Promise((r) => setTimeout(r, 120));
 
 console.log('');
 console.log('--- sau khi bam model ---');
@@ -279,6 +272,35 @@ for (const row of keyRows) {
 const leak = JSON.stringify(keyRows.map((r) => r.children[0]?.children[0]?.textContent));
 console.log('');
 console.log(leak.includes(KEY_A) ? 'LOI: hien full secret o danh sach' : 'OK: chi hien masked, khong lo secret');
+
+// Clicking an API row opens the chat panel: a real chat against that key.
+const chatField = registry.get('chatField');
+console.log('o chat an truoc khi bam API:', chatField.hidden === false ? 'dang hien' : 'dang an');
+if (keyRows.length) {
+  const flex = kid(keyRows[0], 'kflex');
+  flex._listeners.click.forEach((fn) => fn());
+  await new Promise((r) => setTimeout(r, 60));
+  console.log('bam API -> mo o chat:', chatField.hidden === false ? 'OK' : 'khong mo');
+  const chatText = (registry.get('chatLog').children ?? []).map((c) => c.textContent).join(' ');
+  console.log('log chat:', chatText.slice(0, 80));
+  console.log(
+    'nut GUI:',
+    registry.get('chatSend') ? 'co' : 'khong co',
+    '| nut xoa API:',
+    registry.get('chatDelete') ? 'co' : 'khong co'
+  );
+  console.log('lo secret trong o chat:', chatText.includes(KEY_A) || chatText.includes(KEY_B) ? 'LOI' : 'khong');
+}
+
+// Export: the working configuration, in the shape another tool reads.
+registry.get('btnExport')._listeners.click.forEach((fn) => fn());
+await new Promise((r) => setTimeout(r, 250));
+console.log('nut xuat cau hinh -> mo sheet:', registry.get('exportDialog').open ? 'OK' : 'khong mo');
+console.log('so URL xuat duoc:', registry.get('exportCount').textContent || '(khong co)');
+console.log('dinh dang dau tien:', registry.get('exportFormat').value);
+const exportBody = registry.get('exportOut').textContent;
+console.log('so dong ban xuat:', exportBody.split('\n').length);
+console.log('ban xuat co lo secret:', exportBody.includes(KEY_A) || exportBody.includes(KEY_B) ? 'co (dung, vi day la ban xuat chu dich)' : 'khong');
 
 // Reveal path
 if (keyRows.length) {

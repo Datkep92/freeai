@@ -79,16 +79,104 @@ export class BaseAdapter {
     return { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' };
   }
 
-  /** The smallest request that still proves inference works. */
-  buildChatRequest({ model, message = CONFIG.probe.message, maxTokens = CONFIG.probe.maxTokens }) {
-    return {
-      method: 'POST',
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: message }],
-        max_tokens: maxTokens,
-      }),
+  /**
+   * The smallest request that still proves inference works.
+   *
+   * `messages` is optional and, when given, replaces the single probe sentence.
+   * It is the seam a real conversation goes through: the probe and the chat
+   * then differ only in the body, so a provider that works for one works for
+   * the other without a second code path to keep in step.
+   */
+  buildChatRequest({ model, message = CONFIG.probe.message, messages = null, maxTokens = CONFIG.probe.maxTokens, temperature = null }) {
+    const body = {
+      model,
+      messages: messages ?? [{ role: 'user', content: message }],
+      max_tokens: maxTokens,
     };
+    if (Number.isFinite(temperature)) body.temperature = temperature;
+    return { method: 'POST', body: JSON.stringify(body) };
+  }
+
+  /**
+   * One streamed chat turn with the caller's own messages.
+   *
+   * This is the only method that carries a real conversation: `probeStreaming`
+   * sends the fixed probe sentence, which is right for a health check and wrong
+   * for a chat. Both share `readStream`, so token-by-token parsing exists once.
+   *
+   * `onToken` is called with each text delta as it arrives, which is what makes
+   * the reply appear while it is still being written. Nothing here writes a
+   * verdict - the caller (the router) decides whether this counts as health.
+   */
+  async streamChat({
+    model,
+    secret,
+    messages,
+    maxTokens = CONFIG.agent.maxTokensPerCall,
+    temperature = CONFIG.agent.defaultTemperature,
+    onToken,
+    timeoutMs = CONFIG.probeTimeoutMs,
+  } = {}) {
+    const request = this.buildChatRequest({ model, messages, maxTokens, temperature });
+    const body = JSON.parse(request.body);
+    body.stream = true;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const startedAt = Date.now();
+
+    try {
+      const response = await fetch(this.chatUrl(), {
+        method: 'POST',
+        headers: this.buildAuthHeaders(secret),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const payload = await readJson(response);
+        const classified = classifyError({
+          httpStatus: response.status,
+          payload,
+          headers: response.headers,
+        });
+        return {
+          ok: false,
+          status: classified.status,
+          scope: classified.scope,
+          httpStatus: response.status,
+          latencyMs: Date.now() - startedAt,
+          error: classified.message,
+          retryAfterMs: classified.retryAfterMs,
+          unsupported: isStreamUnsupported(classified),
+        };
+      }
+
+      const streamed = await readStream(response, startedAt, { onToken });
+      return {
+        ok: true,
+        status: 'HEALTHY',
+        httpStatus: response.status,
+        latencyMs: Date.now() - startedAt,
+        totalMs: Date.now() - startedAt,
+        ttftMs: streamed.ttftMs,
+        content: streamed.content,
+        toolCalls: streamed.toolCalls,
+        finishReason: streamed.finishReason,
+        payload: streamed.payload,
+      };
+    } catch (error) {
+      const timedOut = error?.name === 'AbortError';
+      return {
+        ok: false,
+        status: 'TEMP_ERROR',
+        httpStatus: null,
+        latencyMs: Date.now() - startedAt,
+        error: timedOut ? 'timeout' : error.message,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Turn one raw /models entry into the shape the registry stores. */
@@ -214,6 +302,44 @@ export class BaseAdapter {
   }
 
   /**
+   * One plain chat turn with a message the user typed.
+   *
+   * Separate from probeKey/probeWithMetrics because those send the fixed probe
+   * sentence on purpose: they answer "is this key/model alive", and a caller
+   * that could smuggle its own text in would turn a health probe into a chat
+   * bill. This is the one place a user's own words go to the provider, and it
+   * never writes a verdict anywhere - it only returns what came back.
+   */
+  async chatOnce({ model, secret, message, maxTokens = 256, timeoutMs = CONFIG.probeTimeoutMs } = {}) {
+    const request = this.buildChatRequest({ model, message, maxTokens });
+    const { response, latencyMs, timedOut, error } = await timedFetch(
+      this.chatUrl(),
+      { method: request.method, headers: this.buildAuthHeaders(secret), body: request.body },
+      timeoutMs
+    );
+
+    if (timedOut) return { ok: false, status: 'TEMP_ERROR', httpStatus: null, latencyMs, error: 'timeout' };
+    if (error) return { ok: false, status: 'TEMP_ERROR', httpStatus: null, latencyMs, error: error.message };
+
+    const payload = await readJson(response);
+    if (response.ok) {
+      const content =
+        payload?.choices?.[0]?.message?.content ?? payload?.choices?.[0]?.text ?? null;
+      return { ok: true, status: 'HEALTHY', httpStatus: response.status, latencyMs, content, payload };
+    }
+
+    const classified = classifyError({ httpStatus: response.status, payload, headers: response.headers });
+    return {
+      ok: false,
+      status: classified.status,
+      scope: classified.scope,
+      httpStatus: response.status,
+      latencyMs,
+      error: classified.message,
+    };
+  }
+
+  /**
    * One measured request.
    *
    * Runs with stream:true and timestamps the first chunk, because no provider
@@ -330,9 +456,9 @@ export class BaseAdapter {
  * final usage object may arrive on its own chunk or inside the last one, so it
  * is kept whenever it appears.
  */
-async function readStream(response, startedAt) {
+async function readStream(response, startedAt, { onToken } = {}) {
   const reader = response.body?.getReader?.();
-  if (!reader) return { payload: null, ttftMs: null };
+  if (!reader) return { payload: null, ttftMs: null, content: '', toolCalls: [], finishReason: null };
 
   const decoder = new TextDecoder();
   let buffer = '';
@@ -340,6 +466,8 @@ async function readStream(response, startedAt) {
   let content = '';
   let usage = null;
   let modelId = null;
+  let finishReason = null;
+  const toolCalls = new Map();
 
   for (;;) {
     const { value, done } = await reader.read();
@@ -366,9 +494,27 @@ async function readStream(response, startedAt) {
       if (chunk.usage) usage = chunk.usage;
       if (chunk.model) modelId = chunk.model;
 
+      const choice = chunk?.choices?.[0];
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+
+      // Tool calls arrive split across chunks and keyed by index: the name on
+      // the first, then the arguments a piece at a time. They are merged by
+      // index because that is the only field a provider keeps stable across
+      // chunks - the id can be missing on later pieces.
+      if (Array.isArray(choice?.delta?.tool_calls)) {
+        for (const part of choice.delta.tool_calls) {
+          const index = part.index ?? 0;
+          const slot = toolCalls.get(index) ?? { id: null, name: '', arguments: '' };
+          if (part.id) slot.id = part.id;
+          if (part.function?.name) slot.name = part.function.name;
+          if (part.function?.arguments) slot.arguments += part.function.arguments;
+          toolCalls.set(index, slot);
+        }
+      }
+
       const delta =
-        chunk?.choices?.[0]?.delta?.content ??
-        chunk?.choices?.[0]?.text ??
+        choice?.delta?.content ??
+        choice?.text ??
         chunk?.candidates?.[0]?.content?.parts?.[0]?.text ??
         '';
       if (!delta) continue;
@@ -376,15 +522,22 @@ async function readStream(response, startedAt) {
       // First content byte is the moment "time to first token" refers to.
       if (ttftMs === null) ttftMs = Date.now() - startedAt;
       content += delta;
+      onToken?.(delta);
     }
   }
 
-  const payload = {
-    model: modelId,
-    choices: [{ message: { role: 'assistant', content } }],
-    usage,
-  };
-  return { payload, ttftMs };
+  const calls = [...toolCalls.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+  const message = { role: 'assistant', content };
+  if (calls.length) {
+    message.tool_calls = calls.map((c) => ({
+      id: c.id,
+      type: 'function',
+      function: { name: c.name, arguments: c.arguments },
+    }));
+  }
+
+  const payload = { model: modelId, choices: [{ message }], usage };
+  return { payload, ttftMs, content, toolCalls: calls, finishReason };
 }
 
 /**

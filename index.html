@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Free Model Hub</title>
-<link rel="stylesheet" href="./styles.css?v=15" />
+<link rel="stylesheet" href="./styles.css?v=18" />
 </head>
 <body>
 
@@ -119,6 +119,10 @@
          list: dragging is off then, and a line that still promised it would be
          describing a gesture that does nothing. -->
     <p class="side-hint" id="sideHint">Nhấn giữ một dòng để kéo · bấm biểu tượng khoá để loại khỏi vòng quay</p>
+    <!-- Take the working configuration out of the app. It belongs here, beside
+         the list it summarises, because it is a fact about every URL rather
+         than one of them. -->
+    <button id="btnExport" class="small block">⤓ XUẤT CẤU HÌNH</button>
   </div>
 </aside>
 
@@ -185,11 +189,34 @@
     <button class="tab on" data-tab="keys">API Keys</button>
     <button class="tab" data-tab="health">Sức khoẻ</button>
     <button class="tab" data-tab="log">Hoạt động</button>
+    <button class="tab" data-tab="ai">Trợ lý AI</button>
   </nav>
 
   <section class="tabpane" id="paneKeys"><div id="keysRoot"></div></section>
   <section class="tabpane" id="paneHealth" hidden><div id="healthRoot"></div></section>
   <section class="tabpane" id="paneLog" hidden><div class="log" id="logRoot"></div></section>
+
+  <!-- The AI tab: a real conversation through the router, using the URLs, keys
+       and models already stored. Which one answers - and the rotation to
+       another when a key is expired or out of quota - is the router's job, so
+       this pane only orders the conversation and paints it. -->
+  <section class="tabpane" id="paneAI" hidden>
+    <div class="aihead">
+      <span class="aiwho" id="aiWho">chưa gọi</span>
+      <span class="aibudget" id="aiBudget"></span>
+    </div>
+    <div class="ailog" id="aiLog"></div>
+    <div class="aiform">
+      <textarea id="aiInput" rows="2" autocomplete="off" autocapitalize="off"
+                autocorrect="off" spellcheck="false"
+                placeholder="Hỏi AI… (Ctrl/⌘ + Enter để gửi)"></textarea>
+      <div class="aiform-row">
+        <button id="aiSend" class="primary">GỬI</button>
+        <button id="aiStop" class="small danger" hidden>DỪNG</button>
+        <button id="aiClear" class="small">XOÁ</button>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- ============================ bottom tab bar ============================
@@ -211,6 +238,10 @@
   <button class="tabbar-btn" data-goto="health">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
     <span>Sức khoẻ</span>
+  </button>
+  <button class="tabbar-btn" data-goto="ai">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.1 5.4L19.5 10l-5.4 2.1L12 17.5 9.9 12.1 4.5 10l5.4-1.6zM18.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+    <span>AI</span>
   </button>
 </nav>
 
@@ -263,6 +294,23 @@
       <div id="lockAllKeys" class="keylockall"></div>
       <div id="keyRows" class="keyrows"></div>
     </div>
+
+    <!-- Clicking an API row opens this: a real chat against that exact key and
+         model. GỬI sends a turn, the log shows both sides, and XOÁ API removes
+         the key the chat is talking through. -->
+    <div class="field" id="chatField" hidden>
+      <div class="field-label">
+        <span>CHAT TEST · <span id="chatKeyName"></span></span>
+        <button id="chatDelete" class="mini del">Xoá API</button>
+      </div>
+      <div id="chatLog" class="chatlog"></div>
+      <div class="chatline">
+        <input id="chatInput" class="testinput" type="text" autocomplete="off"
+               autocapitalize="off" autocorrect="off" spellcheck="false"
+               placeholder="Nhập tin nhắn để test API này" />
+        <button id="chatSend" class="primary small">GỬI</button>
+      </div>
+    </div>
   </div>
 
   <!-- One full-width primary, the two secondary below it sharing a line. Three
@@ -285,16 +333,23 @@
 <dialog id="keyDialog" class="sheet sheet-form">
   <div class="sheet-grab" aria-hidden="true"></div>
   <div class="sheet-head">
-    <h3 class="dlg-title">Thêm API key vào URL</h3>
+    <h3 class="dlg-title">Danh sách API</h3>
     <p class="hint" id="keyHint"></p>
   </div>
+  <!-- One dialog, two jobs: the list of this URL's keys (each labelled by
+       whether it works), and the form that adds or replaces one. The list is
+       the default, and "+ Thêm API" steps into the form. -->
   <div class="sheet-body">
-    <div class="warnbox">
-      Key gắn vào <b>URL</b>, không gắn riêng từng model.
-      Mọi model của URL này đều dùng được key này.
+    <div id="keyList" class="listmode"></div>
+    <button id="keyListAdd" class="small block" hidden>+ Thêm API</button>
+    <div id="keyForm" hidden>
+      <div class="warnbox">
+        Key gắn vào <b>URL</b>, không gắn riêng từng model.
+        Mọi model của URL này đều dùng được key này.
+      </div>
+      <input id="keySecret" type="password" autocomplete="off" autocapitalize="off"
+             autocorrect="off" spellcheck="false" placeholder="dán key vào đây" />
     </div>
-    <input id="keySecret" type="password" autocomplete="off" autocapitalize="off"
-           autocorrect="off" spellcheck="false" placeholder="dán key vào đây" />
   </div>
   <div class="sheet-foot">
     <button id="keyConfirm" class="primary">Thêm + check</button>
@@ -356,19 +411,25 @@ model-free-2"></textarea>
 <dialog id="modelAddDialog" class="sheet sheet-form">
   <div class="sheet-grab" aria-hidden="true"></div>
   <div class="sheet-head">
-    <h3 class="dlg-title">Thêm model thủ công</h3>
+    <h3 class="dlg-title">Danh sách model 0đ</h3>
     <p class="hint" id="manualHint"></p>
   </div>
+  <!-- Same dual-mode dialog as the API list: the list of this URL's 0đ models,
+       and the form that adds or edits one. -->
   <div class="sheet-body">
-    <label for="manualModel">Model ID</label>
-    <input id="manualModel" type="text" autocomplete="off" autocapitalize="off"
-           autocorrect="off" spellcheck="false" placeholder="vd: fledge-alpha-free" />
-    <label for="manualFree">Trạng thái</label>
-    <select id="manualFree">
-      <option value="FREE_LIKELY">Nghi là miễn phí</option>
-      <option value="FREE_UNKNOWN">Chưa rõ</option>
-      <option value="FREE_VERIFIED">Miễn phí (tôi xác minh)</option>
-    </select>
+    <div id="manualList" class="listmode"></div>
+    <button id="manualListAdd" class="small block" hidden>+ Thêm model</button>
+    <div id="manualForm" hidden>
+      <label for="manualModel">Model ID</label>
+      <input id="manualModel" type="text" autocomplete="off" autocapitalize="off"
+             autocorrect="off" spellcheck="false" placeholder="vd: fledge-alpha-free" />
+      <label for="manualFree">Trạng thái</label>
+      <select id="manualFree">
+        <option value="FREE_LIKELY">Nghi là miễn phí</option>
+        <option value="FREE_UNKNOWN">Chưa rõ</option>
+        <option value="FREE_VERIFIED">Miễn phí (tôi xác minh)</option>
+      </select>
+    </div>
   </div>
   <div class="sheet-foot">
     <button id="manualConfirm" class="primary">Thêm</button>
@@ -518,7 +579,53 @@ model-free-2"></textarea>
   </div>
 </dialog>
 
+<!-- ============================ export config ============================
+     The configuration that is actually working, in the three shapes other
+     tools read. It contains real keys, so it says so at the top and never
+     leaves this sheet except through an explicit copy or download. -->
+<dialog id="exportDialog" class="sheet sheet-form">
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <h3 class="dlg-title">Xuất cấu hình đang hoạt động</h3>
+    <p class="hint" id="exportHint">Chỉ gồm URL đã check ra model + API dùng được. Model hoặc API bị khoá sẽ bị bỏ qua.</p>
+    <button id="exportClose" class="sheet-x" aria-label="Đóng">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  <div class="sheet-body">
+    <div class="warnbox">
+      Bản xuất chứa <b>API key thật</b>. Chỉ dán vào máy của bạn — đừng chia sẻ hay commit.
+    </div>
+
+    <div class="field">
+      <div class="field-label">
+        <span>ĐỊNH DẠNG</span>
+        <span class="field-note" id="exportCount"></span>
+      </div>
+      <select id="exportFormat" class="testkey">
+        <option value="env">.env — OpenAI-compatible (openai, aichat, llm, mods, aider, ...)</option>
+        <option value="json">JSON — cấu hình đầy đủ nhiều endpoint</option>
+        <option value="yaml">YAML — cấu hình đầy đủ nhiều endpoint</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <div class="field-label"><span>NỘI DUNG</span></div>
+      <pre id="exportOut" class="exportout"></pre>
+    </div>
+  </div>
+
+  <div class="sheet-foot sheet-foot-stack">
+    <button id="exportCopy" class="primary block">CHÉP CẤU HÌNH</button>
+    <div class="foot-row">
+      <button id="exportDownload" class="small">TẢI FILE</button>
+      <button id="exportDone" class="small">ĐÓNG</button>
+    </div>
+  </div>
+</dialog>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="./app.js?v=15"></script>
+<script type="module" src="./app.js?v=18"></script>
 </body>
 </html>
