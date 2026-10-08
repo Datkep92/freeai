@@ -215,13 +215,32 @@ TRỢ LÝ AI + SỬA/XOÁ URL TỪ NGĂN KÉO (lượt này):
     để thanh lọc-theo-URL và thẻ model đang mở không trỏ vào thứ đã mất.
   * Cả hai đều nằm trong sheet ấn-giữ của ngăn kéo, và chỉ ở đó — không thêm nút nào lên hàng.
 
+FILES CHANGED (lượt 2 THEME + CÔNG TẮC SÁNG/TỐI):
+- styles.css                :root đổi thành palette SÁNG (nền #f1f4f9, thẻ trắng, chữ #101728,
+                            accent #2f6fed, status màu đủ tương phản trên nền sáng); palette TỐI
+                            cũ giữ nguyên 100% trong :root[data-theme="dark"]; các chỗ hardcode
+                            (scrim, shadow sheet/toast/drag/sidebar, nút primary gần-trắng)
+                            chuyển sang token --scrim/--sh-*/--primary-*; thêm --sh-card cho
+                            .group/.filter-row/.keyrow/.tabs; chuyển tab animate paneIn 180ms;
+                            prefers-reduced-motion tắt cả animation
+- index.html                meta theme-color + color-scheme "light dark"; script con set
+                            data-theme TRƯỚC paint (localStorage fmh-theme, else
+                            prefers-color-scheme); nút #btnTheme trên appbar; ?v=19 → ?v=20
+- app.js                    icon sun/moon; currentTheme/paintTheme/applyTheme — vẽ nút theo
+                            theme đang bật, ghi fmh-theme, cập nhật meta theme-color + colorScheme
+- sw.js                     cache fmh-v22 → fmh-v23
+- tests/cases-ui.js         DOM_IDS + documentElement; helper currentThemeLabel; UI68 (công tắc
+                            đổi data-theme, đổi nhãn aria, lật lại được)
+- uicheck.mjs               registry nhận id btnTheme
+
 TEST RESULTS:
-- npm test        317/317 PASS   (exit 0; thêm AG1–AG4 cho core/agent.js + Router.streamChat,
+- npm test        318/318 PASS   (exit 0; thêm UI68 — công tắc Sáng/Tối; trước đó AG1–AG4 cho core/agent.js + Router.streamChat,
                   UI64 (bong bóng AI nhận stream và trừ đúng 42 token báo về, xoá hội thoại không
                   hoàn ngân sách), UI65 (menu ấn-giữ URL có "Sửa URL" và "Xoá URL này", dòng
                   xoá là dòng đỏ), UI66 (sửa URL: prefill đúng, 2 ô tạo-mới bị ẩn, lưu xong đổi tên
                   trên ngăn kéo + storage, không sinh URL thứ hai, model giữ nguyên),
                   UI67 (xoá: mở sheet chưa mất gì, Huỷ giữ nguyên, Xoá mới cascade hết);
+                  UI68 (công tắc Sáng/Tối ở appbar: đổi data-theme, đổi nhãn, lật lại được);
                   EX1–EX4 trước đó vẫn xanh)
 - npm run uicheck PASS           (exit 0; render app.js thật, 0 dòng "LOI";
                   "render() chay khong loi", "nut xuat cau hinh -> mo sheet: OK")
@@ -234,10 +253,17 @@ TEST RESULTS:
   (http://localhost:8799/v2) chạy trọn vẹn và để lại đúng 24 URL như trước — không mất dữ liệu thật.
   Console chỉ có 1 lỗi 404 là GET /v2/models của chính URL tạm khi quét.
   (Ảnh chụp màn hình không chụp được do webview của host không composited — đã xác minh bằng DOM.)
+- Browser thật (http://localhost:8788/?v=20): load mặc định SÁNG — bg rgb(241,244,249), chữ
+  rgb(16,23,40), thẻ .group có shadow 1px, nút primary là gradient xanh #3b81ff→#2f6fed chữ
+  trắng, #btnTheme có icon + nhãn "Giao diện sáng". Bấm công tắc → data-theme=dark, bg
+  rgb(8,9,12), nhãn "Giao diện tối", meta theme-color #08090c, primary về slab gần-trắng
+  (màu cũ); reload vẫn giữ dark (localStorage fmh-theme), bấm tiếp về light và lưu "light".
+  Chuyển tab có animation paneIn; console không lỗi mới (404 duy nhất là GET /v2/models
+  của URL tạm từ vòng test trước).
 
 BUILD RESULT:
-Không có bước build (web tĩnh). Shell đã đổi nên sw.js bump lên fmh-v22 và index.html ?v=19
-(cả styles.css và app.js); thêm ./core/agent.js vào SHELL của service worker.
+Không có bước build (web tĩnh). Shell giữ nguyên, sw.js bump lên fmh-v23 và index.html ?v=20
+(đổi styles.css và app.js; core không đổi).
 
 HOW TO RUN:
   npm start                 # UI: http://localhost:8788
@@ -255,13 +281,15 @@ KNOWN ISSUES:
 - Ô chat gửi văn bản người dùng nhập tới provider thật; đã kiểm bằng mock, chưa bằng key thật.
 - Tab Trợ lý AI đã kiểm bằng mock provider (stream, ngân sách, xoay key 401). Chưa chạy với key thật;
   tool-calling đã đọc được delta.tool_calls nhưng CHƯA có tool nào để gọi — đó là P2.
-- Ô chat gửi văn bản người dùng nhập tới provider thật; đã kiểm bằng mock, chưa bằng key thật.
 - Ô tìm URL, bộ lọc URL và thanh lọc-theo-URL là trạng thái tạm của phiên (không lưu storage):
   mở lại app là về "Tất cả". Đây là lựa chọn có chủ ý — một bộ lọc còn sót lại sẽ khiến
   người dùng tưởng mất URL (hoặc tưởng mất model).
+- Theme theo lựa chọn lúc mở trang: đổi giao diện hệ điều hành giữa phiên không tự đổi app —
+  phải bấm công tắc hoặc mở lại trang (data-theme set ngay khi boot để tránh chớp màu).
 
 NEXT STEP:
 - Dùng key thật trên một URL thật để xác nhận đầu-cuối ngoài đời.
+- P2: tool-calling cho tab Trợ lý AI (đọc model/key đã có + chạy lệnh cục bộ qua P5 bridge).
 - P2 tab Trợ lý AI: tool đọc dữ liệu (list_urls / list_models / get_metrics / get_health / scan_url /
   export_config / check_api) + điều khiển app, tool mutate có xác nhận, tool chỉ nhận dữ liệu đã lọc
   (không bao giờ đưa key.secret vào prompt).

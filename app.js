@@ -64,6 +64,8 @@ const ICONS = {
   wrench: '<path d="M14.7 6.3a4 4 0 0 0 5.3 5.3l-8 8a2.8 2.8 0 0 1-4-4l8-8z"/>',
   up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   down: '<path d="M12 5v14M5 12l7 7 7-7"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
 };
 
 /** Build an <svg> node for one of the paths above. */
@@ -3077,8 +3079,45 @@ function downloadText(filename, text) {
   }
 }
 
+// ------------------------------------------------------- theme
+//
+// Two palettes, one switch. The head script has already set data-theme before
+// this module runs, so the job here is only to paint the appbar switch to match
+// and to handle the tap from then on. Everything else styles.css does from
+// those tokens - no element is styled twice.
+
+const THEME_KEY = 'fmh-theme';
+const THEME_META = { light: '#f1f4f9', dark: '#08090c' };
+
+function currentTheme() {
+  const explicit = document.documentElement?.dataset?.theme;
+  if (explicit === 'light' || explicit === 'dark') return explicit;
+  // Nothing stored yet: answer the same way the head script did.
+  return globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light';
+}
+
+function paintTheme(theme) {
+  const btn = $('btnTheme');
+  // The glyph names the palette you are ON; the tap moves to the other one.
+  btn.replaceChildren?.(icon(theme === 'dark' ? 'moon' : 'sun'));
+  btn.setAttribute?.('aria-label', `Giao diện ${theme === 'dark' ? 'tối' : 'sáng'} — bấm để đổi`);
+  // The status bar follows the page, not the system, once a theme is active.
+  document.querySelector?.('meta[name="theme-color"]')?.setAttribute?.('content', THEME_META[theme]);
+  const root = document.documentElement;
+  if (root?.style) root.style.colorScheme = theme;
+}
+
+function applyTheme(theme) {
+  if (document.documentElement?.dataset) document.documentElement.dataset.theme = theme;
+  // Private mode or a headless run has no storage; the session still switches.
+  try { globalThis.localStorage?.setItem(THEME_KEY, theme); } catch { /* no storage */ }
+  paintTheme(theme);
+}
+
 // ------------------------------------------------------- wiring
 
+paintTheme(currentTheme());
+$('btnTheme').addEventListener('click', () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark'));
 $('btnMenu').addEventListener('click', toggleDrawer);
 $('scrim').addEventListener('click', () => openDrawer(false));
 // The drawer keeps the drawer open state consistent: adding a URL from inside

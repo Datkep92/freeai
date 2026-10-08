@@ -6,12 +6,27 @@
      indicator; the scale is pinned at 1 because this is a list UI, not a
      document, and pinch-zoom on a list only ever hides rows. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-<meta name="theme-color" content="#0a0e13" />
-<meta name="color-scheme" content="dark" />
+<meta name="theme-color" id="metaTheme" content="#f1f4f9" />
+<meta name="color-scheme" content="light dark" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<!-- Theme before first paint. styles.css keys its two palettes on
+     data-theme, so this runs before the stylesheet renders anything: the stored
+     choice wins, otherwise the system setting decides. Without it a dark-mode
+     phone would flash the light palette (or the reverse) on every load. -->
+<script>
+  try {
+    var stored = localStorage.getItem('fmh-theme');
+    var dark = stored ? stored === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    document.getElementById('metaTheme').content = dark ? '#08090c' : '#f1f4f9';
+  } catch (e) {
+    /* storage or matchMedia unavailable: the light default in :root stands. */
+  }
+</script>
 <title>Free Model Hub</title>
-<link rel="stylesheet" href="./styles.css?v=19" />
+<link rel="stylesheet" href="./styles.css?v=20" />
 </head>
 <body>
 
@@ -39,6 +54,10 @@
   <button id="appbarAddUrl" class="appbar-btn mini" aria-label="Thêm URL mới">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6v-6h2v6h6v2z"/></svg>
   </button>
+
+  <!-- The palette switch. Its glyph is filled in by app.js to match the theme
+       already applied in <head>, so the icon never shows the wrong sky. -->
+  <button id="btnTheme" class="iconbtn" aria-label="Đổi giao diện sáng hoặc tối"></button>
 </header>
 
 <!-- ============================ URL drawer ============================
@@ -646,6 +665,6 @@ model-free-2"></textarea>
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="./app.js?v=19"></script>
+<script type="module" src="./app.js?v=20"></script>
 </body>
 </html>

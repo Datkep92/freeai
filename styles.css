@@ -12,41 +12,44 @@
  *     five-action row from eating the text it is describing.
  *   - Safe areas are respected at the top (notch) and the bottom (home
  *     indicator), so nothing ends up under the hardware.
+ *   - Two palettes, one structure. Light is :root; dark is [data-theme="dark"]
+ *     further down with the same variable names and different values, and a
+ *     tiny script in index.html picks between them before the first paint.
  */
 
 :root {
-  /* Surfaces. Four steps, each one clearly lighter than the last, because the
+  /* Surfaces. Four steps, each one clearly darker than the last, because the
      whole app is built from stacked panels and the separation between them is
      what makes it read as designed rather than as one flat sheet of text. */
-  --bg: #08090c;
-  --surface: #101218;
-  --surface-2: #171a22;
-  --surface-3: #1f232d;
-  --surface-4: #282d39;
-  --line: #23262f;
-  --line-strong: #333846;
+  --bg: #f1f4f9;
+  --surface: #ffffff;
+  --surface-2: #f7f9fc;
+  --surface-3: #eef1f7;
+  --surface-4: #e3e8f2;
+  --line: #e5e9f1;
+  --line-strong: #cfd6e3;
 
   /* Text. Three levels: the value, the label, the hint. */
-  --text: #f0f2f5;
-  --text-2: #a2a9b6;
-  --text-3: #6e7684;
+  --text: #101728;
+  --text-2: #4e596d;
+  --text-3: #828d9f;
   --fg: var(--text);
 
   /* Status. Every one of these is also written as a word somewhere in the UI, so
      colour never has to carry the meaning on its own - which matters most for
      the free-level dots, where the whole point is a quick read at a glance. */
-  --ok: #3ddc97;
-  --ok-dim: #0d2a1e;
-  --warn: #f5c344;
-  --warn-dim: #2e2409;
-  --bad: #ff6b6b;
-  --bad-dim: #33161a;
-  --info: #7cc4ff;
-  --info-dim: #10233a;
-  --paid: #c3a6ff;
-  --paid-dim: #241a3d;
-  --unknown: #7a8494;
-  --unknown-dim: #1b1f27;
+  --ok: #0b8f63;
+  --ok-dim: #e0f6ec;
+  --warn: #b45309;
+  --warn-dim: #fdf0da;
+  --bad: #dc2626;
+  --bad-dim: #fdeaea;
+  --info: #2563eb;
+  --info-dim: #e7efff;
+  --paid: #7c3aed;
+  --paid-dim: #f0e9ff;
+  --unknown: #6b7484;
+  --unknown-dim: #edf0f5;
   --free: var(--ok);
   --likely: var(--warn);
 
@@ -55,9 +58,26 @@
      is used for small marks - a selected edge, a text colour, an icon - and the
      primary button is a near-white surface instead, which is what a premium app
      does with its main action. */
-  --accent: #6ea8fe;
-  --accent-dim: #16233a;
-  --accent-line: #2c4468;
+  --accent: #2f6fed;
+  --accent-dim: #e8f0ff;
+  --accent-line: #bcd3ff;
+
+  /* The primary action. On the light palette it is the one filled, shadowed
+     control on the screen; the dark palette keeps the old near-white slab. */
+  --primary-bg: linear-gradient(180deg, #3b81ff, #2f6fed);
+  --primary-fg: #ffffff;
+  --primary-border: #2f6fed;
+  --primary-active: #255ee0;
+  --primary-shadow: 0 6px 16px rgba(47, 111, 237, .32);
+
+  /* Elevation. Light separates panels with a hairline plus a nearly invisible
+     shadow; dark needs no card shadow at all and says it with contrast. */
+  --sh-card: 0 1px 2px rgba(15, 23, 42, .05);
+  --sh-sheet: 0 -14px 44px rgba(15, 23, 42, .14);
+  --sh-toast: 0 10px 30px rgba(15, 23, 42, .16);
+  --sh-drag: 0 12px 28px rgba(15, 23, 42, .25);
+  --sh-side: 24px 0 60px rgba(15, 23, 42, .14);
+  --scrim: rgba(15, 23, 42, .38);
 
   /* Radii. Cards sit at 16, controls at 11, pills are fully round. */
   --r-sm: 8px;
@@ -81,6 +101,57 @@
      and both sides read this one value so the bar and the thing that has to
      clear it can never drift apart. */
   --appbar-h: calc(var(--safe-t) + 62px);
+}
+
+/* The dark palette: the app as it shipped before the light theme, same variable
+   names, different values. data-theme is set by the head script before first
+   paint (stored choice, else the system preference), so this block and the one
+   above never fight - each applies to exactly one theme. */
+:root[data-theme="dark"] {
+  --bg: #08090c;
+  --surface: #101218;
+  --surface-2: #171a22;
+  --surface-3: #1f232d;
+  --surface-4: #282d39;
+  --line: #23262f;
+  --line-strong: #333846;
+
+  --text: #f0f2f5;
+  --text-2: #a2a9b6;
+  --text-3: #6e7684;
+  --fg: var(--text);
+
+  --ok: #3ddc97;
+  --ok-dim: #0d2a1e;
+  --warn: #f5c344;
+  --warn-dim: #2e2409;
+  --bad: #ff6b6b;
+  --bad-dim: #33161a;
+  --info: #7cc4ff;
+  --info-dim: #10233a;
+  --paid: #c3a6ff;
+  --paid-dim: #241a3d;
+  --unknown: #7a8494;
+  --unknown-dim: #1b1f27;
+  --free: var(--ok);
+  --likely: var(--warn);
+
+  --accent: #6ea8fe;
+  --accent-dim: #16233a;
+  --accent-line: #2c4468;
+
+  --primary-bg: var(--text);
+  --primary-fg: #0a0c10;
+  --primary-border: var(--text);
+  --primary-active: #d7dbe2;
+  --primary-shadow: none;
+
+  --sh-card: none;
+  --sh-sheet: 0 -18px 50px rgba(0, 0, 0, .55);
+  --sh-toast: 0 10px 30px rgba(0, 0, 0, .45);
+  --sh-drag: 0 12px 28px rgba(0, 0, 0, .5);
+  --sh-side: 20px 0 50px rgba(0, 0, 0, .5);
+  --scrim: rgba(0, 0, 0, .6);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -211,7 +282,7 @@ svg {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(0, 0, 0, .6);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
   animation: fade var(--fast) var(--ease);
 }
@@ -623,19 +694,20 @@ button {
 button:active { transform: scale(.975); background: var(--surface-3); }
 button:disabled { opacity: .4; pointer-events: none; }
 
-/* The primary action is the lightest thing on the screen.
-   A saturated blue fill is the default look of a web form, and it is exactly
-   what makes an app feel unfinished: the eye is drawn to a flat block of colour
-   instead of to the content. A near-white surface reads as a physical control,
-   carries the same contrast for any label colour, and lets the one accent hue
-   stay reserved for marks and edges. */
+/* The primary action.
+   The palette decides its face: light gives it the one gradient and the one
+   drop shadow in the app - a filled accent control is what a modern light UI
+   puts under the thumb - while dark keeps the near-white slab that reads as a
+   physical control against a black page. Either way it is the first thing the
+   eye lands on, and the accent hue stays reserved for marks and edges. */
 button.primary {
-  background: var(--text);
-  border-color: var(--text);
-  color: #0a0c10;
+  background: var(--primary-bg);
+  border-color: var(--primary-border);
+  color: var(--primary-fg);
+  box-shadow: var(--primary-shadow);
   font-weight: 650;
 }
-button.primary:active { background: #d7dbe2; }
+button.primary:active { background: var(--primary-active); }
 
 button.danger {
   background: var(--bad-dim);
@@ -724,6 +796,7 @@ button.mini.lockall:active { background: var(--surface-3); color: var(--text); }
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
+  box-shadow: var(--sh-card);
 }
 
 .chip {
@@ -853,6 +926,7 @@ label {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
+  box-shadow: var(--sh-card);
   overflow: hidden;
 }
 .group + .group { margin-top: 10px; }
@@ -1146,6 +1220,7 @@ label {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
+  box-shadow: var(--sh-card);
 }
 .tab {
   flex: 1;
@@ -1253,7 +1328,7 @@ dialog:not([open]) { display: none; }
   max-height: 88dvh;
   border-radius: var(--r-xl) var(--r-xl) 0 0;
   border-top: 1px solid var(--line-strong);
-  box-shadow: 0 -18px 50px rgba(0, 0, 0, .55);
+  box-shadow: var(--sh-sheet);
 }
 
 .sheet[open] {
@@ -1263,7 +1338,7 @@ dialog:not([open]) { display: none; }
 }
 
 .sheet::backdrop {
-  background: rgba(0, 0, 0, .55);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
 }
@@ -1288,7 +1363,7 @@ dialog:not([open]) { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .sheet[open] { animation: none; }
   .sidebar { transition: none; }
-  * { transition: none !important; }
+  * { transition: none !important; animation: none !important; }
 }
 
 /* ---- inside a sheet ----
@@ -1609,6 +1684,7 @@ dialog:not([open]) { display: none; }
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
+  box-shadow: var(--sh-card);
 }
 .keyrow .kflex { flex: 1; min-width: 0; padding: 0 4px 0 12px; }
 .keyrow .kmasked {
@@ -1709,7 +1785,7 @@ dialog:not([open]) { display: none; }
 .dragging {
   opacity: .95;
   background: var(--surface-3);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, .5);
+  box-shadow: var(--sh-drag);
   border-radius: var(--r-md);
   /* The row follows the finger on the vertical axis; the browser must not also
      scroll while it is held. */
@@ -1730,6 +1806,14 @@ dialog:not([open]) { display: none; }
 /* A pane is just a block. It is hidden with the `hidden` attribute, and the
    rule makes sure nothing here can re-show it. */
 .tabpane[hidden] { display: none; }
+
+/* Switching panes fades the new one in with an eight-pixel lift. The only
+   place content moves on its own, kept under 200ms so it never delays a tap. */
+@keyframes paneIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.tabpane:not([hidden]) { animation: paneIn .18s var(--ease); }
 
 .rowline {
   display: flex;
@@ -1775,7 +1859,7 @@ dialog:not([open]) { display: none; }
   opacity: 0;
   pointer-events: none;
   transition: opacity .2s, transform .2s;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  box-shadow: var(--sh-toast);
 }
 .toast.on { opacity: 1; transform: translate(-50%, 0); }
 
@@ -1783,7 +1867,7 @@ dialog:not([open]) { display: none; }
    A phone is the target, but on a tablet or a desktop window the same markup
    should stop stretching to full width rather than becoming unreadable. */
 @media (min-width: 700px) {
-  .sidebar { box-shadow: 20px 0 50px rgba(0, 0, 0, .5); }
+  .sidebar { box-shadow: var(--sh-side); }
   /* On a wide screen the sheet floats rather than spanning the full width. The
      inset is restated in full rather than nudged: `inset` is a shorthand, so
      setting only `bottom` here would leave the horizontal centring from the

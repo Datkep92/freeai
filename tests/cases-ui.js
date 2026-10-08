@@ -22,7 +22,7 @@ const ROW_HEIGHT_PX = 56;
 const KEY_B = 'oc_sk_Z9y8X7w6V5u4T3s2R1q0';
 
 const DOM_IDS = [
-  'btnScanAll', 'btnAddUrl', 'btnAddModel', 'btnCancel',
+  'btnScanAll', 'btnAddUrl', 'btnAddModel', 'btnCancel', 'btnTheme',
   'searchBox', 'treeRoot', 'keysRoot', 'healthRoot', 'logRoot', 'toast',
   'filterCount', 'paneKeys', 'paneHealth', 'paneLog', 'paneAI', 'modelDialog', 'modelTitle',
   'modelHint', 'boxUrl', 'boxModel', 'keyRows', 'keyCount', 'btnCheckOne', 'btnAddKey',
@@ -324,6 +324,10 @@ function installDom() {
     },
     querySelectorAll: (sel) => queryStub(sel),
     body: new El(),
+    // The head of the document. The theme code reads and writes data-theme on
+    // it, and a stub without documentElement would throw on boot - before any
+    // test ever got to the feature the suite is for.
+    documentElement: new El('html'),
     // The document is a node too, and it carries the delegated handlers. With
     // addEventListener stubbed out, a navigation wired by delegation looks
     // wired and does nothing - which is the whole failure this case exists for.
@@ -753,6 +757,15 @@ function modelIdsOnScreen(nodes) {
 /** Tap any control, the way a person taps it. */
 async function tap(node) {
   for (const fn of node?._listeners?.click ?? []) await fn({ stopPropagation() {}, preventDefault() {} });
+}
+
+/**
+ * The word the palette switch carries for the theme it is on. Read from the
+ * aria-label, because that is what a screen reader announces too - a glyph
+ * alone would let the button look right while announcing nothing.
+ */
+function currentThemeLabel(btn) {
+  return /Giao diện (tối|sáng)/.exec(btn.getAttribute('aria-label') ?? '')?.[1] ?? '';
 }
 
 /**
@@ -3118,6 +3131,26 @@ export function registerUiCases() {
         false,
         'and the drawer no longer lists it: ' + drawerNames(nodes).join(',')
       );
+    });
+
+    it('UI68: the appbar switch flips the palette and remembers the choice', async () => {
+      const nodes = installDom();
+      globalThis.fetch = createMockFetch({ '/models': { body: { data: [] } } });
+      await bootApp();
+
+      const root = globalThis.document.documentElement;
+      const btn = nodes.get('btnTheme');
+      // Boot: no stored choice, no matchMedia in the harness, so the light
+      // default is what the head script would have painted.
+      assertEqual(currentThemeLabel(btn), 'sáng', 'the switch announces the palette it starts on');
+
+      await tap(btn);
+      assertEqual(root.dataset.theme, 'dark', 'first tap switches to the dark palette');
+      assertEqual(currentThemeLabel(btn), 'tối', 'and the switch re-announces it');
+
+      await tap(btn);
+      assertEqual(root.dataset.theme, 'light', 'second tap switches back');
+      assertEqual(currentThemeLabel(btn), 'sáng', 'and the label follows again');
     });
   });
 }
